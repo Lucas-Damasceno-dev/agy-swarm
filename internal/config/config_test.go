@@ -76,3 +76,26 @@ func TestGeneratePersonaRule(t *testing.T) {
 		t.Errorf("regra deve conter instruções do ai-memory")
 	}
 }
+
+func TestMaestroPromptsAntiCodingGuard(t *testing.T) {
+	roles := DefaultRoles()
+
+	// Prompt interativo
+	inter := GenerateInteractiveMaestroPrompt(roles)
+	if !strings.Contains(inter, "NUNCA EDITA OU CRIA CÓDIGO FONTE DIRETAMENTE") {
+		t.Errorf("prompt interativo deve proibir expressamente edição direta de código")
+	}
+	if !strings.Contains(inter, "agy-swarm dispatch") {
+		t.Errorf("prompt interativo deve instruir o Maestro a usar 'agy-swarm dispatch'")
+	}
+
+	// Prompt inicial com tarefa
+	initP := GenerateInitialMaestroPrompt(roles, "Minha tarefa de teste")
+	if !strings.Contains(initP, "NUNCA EDITA OU CRIA CÓDIGO FONTE DIRETAMENTE") {
+		t.Errorf("prompt inicial deve proibir expressamente edição direta de código")
+	}
+	if !strings.Contains(initP, "Minha tarefa de teste") {
+		t.Errorf("prompt inicial deve conter a tarefa do usuário")
+	}
+}
+

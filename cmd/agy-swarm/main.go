@@ -40,6 +40,7 @@ var (
 func usage() {
 	fmt.Fprintf(os.Stderr, `⚡ AGY-SWARM // Terminal Multi-Agent Orchestrator
 Uso:
+  agy-swarm dispatch [flags] ["tarefa/desafio"]
   agy-swarm pipeline [flags] ["tarefa/desafio"]
   agy-swarm [flags] ["tarefa/desafio inicial"]
   agy-swarm stop [--force]
@@ -138,6 +139,9 @@ func main() {
 		case "clean":
 			handleClean()
 			return
+		case "dispatch":
+			handleDispatch()
+			return
 		case "help", "-h", "--help":
 			usage()
 			return
@@ -224,16 +228,19 @@ func main() {
 	}
 
 	maestroRole := cfg.Roles[0]
-	var maestroPrompt string
+	var pText string
 	if cfg.Prompt != "" {
-		pText := config.GenerateInitialMaestroPrompt(cfg.Roles, cfg.Prompt)
-		tmpFile := filepath.Join(runtimeDir, fmt.Sprintf("prompt-%s.txt", maestroRole.Type))
-		if err := writeSecureFile(tmpFile, []byte(pText)); err != nil {
-			fmt.Fprintf(os.Stderr, "Erro ao gravar prompt protegido para o Maestro: %v\n", err)
-			os.Exit(1)
-		}
-		maestroPrompt = tmpFile
+		pText = config.GenerateInitialMaestroPrompt(cfg.Roles, cfg.Prompt)
+	} else {
+		pText = config.GenerateInteractiveMaestroPrompt(cfg.Roles)
 	}
+
+	tmpFile := filepath.Join(runtimeDir, fmt.Sprintf("prompt-%s.txt", maestroRole.Type))
+	if err := writeSecureFile(tmpFile, []byte(pText)); err != nil {
+		fmt.Fprintf(os.Stderr, "Erro ao gravar prompt protegido para o Maestro: %v\n", err)
+		os.Exit(1)
+	}
+	maestroPrompt := tmpFile
 
 	fmt.Printf("🖥️ Montando layout Tmux (Sessão: %s)...\n", cfg.SessionName)
 	if err := driver.BuildLayout(cfg.Roles); err != nil {
@@ -254,12 +261,7 @@ func main() {
 	// Inicializa os processos nos painéis do Layout de 3 Zonas
 	// 1. Pane 0 (Maestro): Inicia agy com o perfil do Maestro no repositório principal
 	maestroPath := wtPaths[maestroRole.Type]
-	var maestroCmd string
-	if maestroPrompt != "" {
-		maestroCmd = fmt.Sprintf("cd %s && PROMPT=\"$(cat %s)\" && rm -f %s && agy-profile %s -i \"$PROMPT\"", maestroPath, maestroPrompt, maestroPrompt, maestroRole.Profile)
-	} else {
-		maestroCmd = fmt.Sprintf("cd %s && agy-profile %s", maestroPath, maestroRole.Profile)
-	}
+	maestroCmd := fmt.Sprintf("cd %s && PROMPT=\"$(cat %s)\" && rm -f %s && agy-profile %s -i \"$PROMPT\"", maestroPath, maestroPrompt, maestroPrompt, maestroRole.Profile)
 
 	PollUntil(1*time.Second, 10*time.Millisecond, func() bool {
 		return driver.PaneExists(maestroRole.Type)
@@ -278,6 +280,13 @@ func main() {
 	PollUntil(1*time.Second, 10*time.Millisecond, func() bool {
 		return driver.PaneExists("viewport")
 	})
+
+	// Registra o pane_id do Viewport para suporte ao comando 'agy-swarm dispatch'
+	if vpInfo, ok := tmuxDriver.Panes["viewport"]; ok && vpInfo.ID != "" {
+		vpFile := filepath.Join(runtimeDir, fmt.Sprintf("%s-viewport.pane", cfg.SessionName))
+		_ = writeSecureFile(vpFile, []byte(vpInfo.ID))
+	}
+
 	if cfg.Prompt != "" {
 		testCmd := *flagTestCmd
 		if testCmd == "" {
@@ -291,7 +300,7 @@ func main() {
 		viewportCmd := fmt.Sprintf("agy-swarm pipeline%s%s %q", testCmdFlag, autoMergeFlag, cfg.Prompt)
 		_ = driver.SendKeys("viewport", viewportCmd)
 	} else {
-		_ = driver.SendKeys("viewport", "echo '⚡ Viewport Dinâmico: aguardando despacho de workers efêmeros...'")
+		_ = driver.SendKeys("viewport", "clear && echo '⚡ AGY-SWARM // VIEWPORT DINÂMICO DOS WORKERS' && echo '• Aguardando despacho do Maestro ou execute:' && echo '  agy-swarm dispatch \"sua tarefa\"' && echo ''")
 	}
 
 	// Descarta potenciais modais de boas-vindas com Escape no Maestro
@@ -427,10 +436,14 @@ func handleStop() {
 		}
 	}
 
-	// Limpeza de prompts protegidos residuais no diretório de runtime
+	// Limpeza de prompts protegidos e referências de pane residuais no runtime
 	if dir, err := ensureRuntimeDir(); err == nil {
 		matches, _ := filepath.Glob(filepath.Join(dir, "prompt-*.txt"))
 		for _, m := range matches {
+			_ = os.Remove(m)
+		}
+		vpMatches, _ := filepath.Glob(filepath.Join(dir, "*-viewport.pane"))
+		for _, m := range vpMatches {
 			_ = os.Remove(m)
 		}
 	}
@@ -594,6 +607,60 @@ func handlePipeline() {
 	}
 
 	fmt.Println("\n✨ Pipeline de Verificação Adversarial concluído com sucesso!")
+}
+
+func handleDispatch() {
+	cwd, _ := os.Getwd()
+	fs := flag.NewFlagSet("dispatch", flag.ExitOnError)
+	pTestCmd := fs.String("test-cmd", "", "Comando de teste para o Quality Gate")
+	pAutoMerge := fs.Bool("auto-merge", false, "Executa integração automática do vencedor")
+
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "dispatch" {
+		args = args[1:]
+	}
+	_ = fs.Parse(args)
+
+	task := strings.Join(fs.Args(), " ")
+	if strings.TrimSpace(task) == "" {
+		fmt.Fprintf(os.Stderr, "Erro: tarefa/desafio obrigatório.\nUso: agy-swarm dispatch [flags] \"tarefa\"\n")
+		os.Exit(1)
+	}
+
+	session := "agy-swarm"
+	runtimeDir, err := ensureRuntimeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Erro ao obter runtime: %v\n", err)
+		os.Exit(1)
+	}
+
+	testCmd := *pTestCmd
+	if testCmd == "" {
+		testCmd = detectDefaultTestCmd(cwd)
+	}
+	testCmdFlag := fmt.Sprintf(" -test-cmd %q", testCmd)
+	autoMergeFlag := ""
+	if *pAutoMerge {
+		autoMergeFlag = " -auto-merge"
+	}
+	cmdToSend := fmt.Sprintf("agy-swarm pipeline%s%s %q", testCmdFlag, autoMergeFlag, task)
+
+	// Tenta despachar para o painel Viewport do Tmux
+	vpFile := filepath.Join(runtimeDir, fmt.Sprintf("%s-viewport.pane", session))
+	data, err := os.ReadFile(vpFile)
+	if err == nil && len(strings.TrimSpace(string(data))) > 0 {
+		paneID := strings.TrimSpace(string(data))
+		if exec.Command("tmux", "display-message", "-p", "-t", paneID, "#{pane_id}").Run() == nil {
+			_ = exec.Command("tmux", "send-keys", "-t", paneID, cmdToSend, "Enter").Run()
+			fmt.Printf("⚡ Tarefa despachada para o Viewport Dinâmico (%s):\n  %q\n", paneID, task)
+			return
+		}
+	}
+
+	// Fallback se não encontrar o viewport no tmux
+	fmt.Println("ℹ️ Painel Viewport não encontrado no Tmux. Executando pipeline localmente...")
+	os.Args = append([]string{"agy-swarm", "pipeline", "-test-cmd", testCmd}, task)
+	handlePipeline()
 }
 
 // detectDefaultTestCmd identifica se o repositório é Rust (Cargo.toml) ou Go (go.mod) para selecionar o Quality Gate padrão.
