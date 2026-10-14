@@ -238,8 +238,6 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Erro ao gravar prompt protegido para %s: %v\n", r.Type, err)
 			os.Exit(1)
 		}
-		// Expurgo atômico dos prompts após o boot (Zero-Leak)
-		defer os.Remove(tmpFile)
 		promptFiles[r.Type] = tmpFile
 	}
 
@@ -266,7 +264,7 @@ func main() {
 	maestroPrompt := promptFiles[maestroRole.Type]
 	var maestroCmd string
 	if cfg.Prompt != "" {
-		maestroCmd = fmt.Sprintf("cd %s && agy-profile %s -i \"$(cat %s)\"", maestroPath, maestroRole.Profile, maestroPrompt)
+		maestroCmd = fmt.Sprintf("cd %s && PROMPT=\"$(cat %s)\" && rm -f %s && agy-profile %s -i \"$PROMPT\"", maestroPath, maestroPrompt, maestroPrompt, maestroRole.Profile)
 	} else {
 		maestroCmd = fmt.Sprintf("cd %s && agy-profile %s", maestroPath, maestroRole.Profile)
 	}
@@ -435,6 +433,14 @@ func handleStop() {
 	for _, a := range os.Args[2:] {
 		if a == "--force" || a == "-f" {
 			force = true
+		}
+	}
+
+	// Limpeza de prompts protegidos residuais no diretório de runtime
+	if dir, err := ensureRuntimeDir(); err == nil {
+		matches, _ := filepath.Glob(filepath.Join(dir, "prompt-*.txt"))
+		for _, m := range matches {
+			_ = os.Remove(m)
 		}
 	}
 

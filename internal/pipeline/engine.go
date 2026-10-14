@@ -356,6 +356,7 @@ func (e *PipelineEngine) runStageSpeculative(ctx context.Context, contractDiff s
 				candidate.TestOutput = testOut
 				candidate.TestPassed = (tExit == 0)
 
+				_ = exec.Command("git", "-C", wtDir, "add", "-N", ".").Run()
 				diff, _ := e.getGitDiff(wtDir, "swarm/qa", "")
 				candidate.Diff = diff
 				candidate.LinesAdded, candidate.LinesDeleted = countDiffLines(diff)
@@ -388,6 +389,7 @@ func (e *PipelineEngine) runStageSpeculative(ctx context.Context, contractDiff s
 					testOut, tExit, _ = e.dispatcher.Runner.RunCommand(ctx, wtDir, e.cfg.TestCmd, 2*time.Minute)
 					candidate.TestOutput = testOut
 					candidate.TestPassed = (tExit == 0)
+					_ = exec.Command("git", "-C", wtDir, "add", "-N", ".").Run()
 					diff, _ = e.getGitDiff(wtDir, "swarm/qa", "")
 					candidate.Diff = diff
 					candidate.LinesAdded, candidate.LinesDeleted = countDiffLines(diff)
@@ -471,7 +473,7 @@ func (e *PipelineEngine) runStageAuditMerge(ctx context.Context, survivors []Can
 	res.Duration = time.Since(start)
 	res.ArtifactMsg = fmt.Sprintf("Solução vencedora de %s (%s) selecionada e auditada.", best.Role.Name, best.AccountID)
 
-	_ = e.memClient.SendMessage("swarm-lead", "default", fmt.Sprintf("Ciclo concluído! Vencedor: %s. Linhas: +%d/-%d.", best.Role.Name, best.LinesAdded, best.LinesDeleted))
+	_ = e.memClient.SendMessage("pipeline", "swarm-lead", fmt.Sprintf("Ciclo concluído! Vencedor: %s. Linhas: +%d/-%d.", best.Role.Name, best.LinesAdded, best.LinesDeleted))
 
 	return res, nil
 }

@@ -113,10 +113,13 @@ func (m *Manager) ProvisionRoleWorktreeFromBase(role config.RoleConfig, baseRef 
 		if !filepath.IsAbs(excludeFile) {
 			excludeFile = filepath.Join(targetDir, excludeFile)
 		}
-		_ = os.MkdirAll(filepath.Dir(excludeFile), 0755)
-		if f, err := os.OpenFile(excludeFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-			_, _ = f.WriteString("\n.gemini/\n.gemini/rules/swarm-persona.md\n")
-			_ = f.Close()
+		existing, _ := os.ReadFile(excludeFile)
+		if !strings.Contains(string(existing), ".gemini/") {
+			_ = os.MkdirAll(filepath.Dir(excludeFile), 0755)
+			if f, err := os.OpenFile(excludeFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+				_, _ = f.WriteString("\n.gemini/\n.gemini/rules/swarm-persona.md\n")
+				_ = f.Close()
+			}
 		}
 	}
 
@@ -173,12 +176,12 @@ func (m *Manager) SafeCleanup(force bool) error {
 		}
 
 		// Remove worktree
-		_ = exec.Command("git", "worktree", "remove", "--force", targetDir).Run()
+		_ = exec.Command("git", "-C", m.RepoRoot, "worktree", "remove", "--force", targetDir).Run()
 		branchName := fmt.Sprintf("swarm/%s", r.Type)
-		_ = exec.Command("git", "branch", "-D", branchName).Run()
+		_ = exec.Command("git", "-C", m.RepoRoot, "branch", "-D", branchName).Run()
 	}
 
-	_ = exec.Command("git", "worktree", "prune").Run()
+	_ = exec.Command("git", "-C", m.RepoRoot, "worktree", "prune").Run()
 	_ = os.Remove(worktreesDir)
 	return nil
 }

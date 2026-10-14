@@ -218,31 +218,25 @@ Inicie sua análise agora!`,
 
 // GenerateInitialMaestroPrompt gera o prompt de boot do Maestro.
 func GenerateInitialMaestroPrompt(roles []RoleConfig, task string) string {
-	var specialistList []string
-	for _, r := range roles {
-		if r.Type != RoleLead {
-			specialistList = append(specialistList, fmt.Sprintf("- %s %s (ai-memory: '%s')", r.Icon, r.Name, r.Project))
-		}
-	}
-
 	return fmt.Sprintf(`⚡ VOCÊ É O MAESTRO DO ENXAME AGY-SWARM.
 Perfil: default | Projeto ai-memory: swarm-lead
-Você é o líder da sessão, moderador do debate técnico e o único agente que interage diretamente com o usuário.
+Você é o líder da sessão, moderador e o ponto focal de interação direta com o usuário.
 
 TAREFA DO USUÁRIO:
 "%s"
 
-ESTADO ATUAL DO ENXAME:
-O desafio já foi despachado para as caixas postais dos seus especialistas:
-%s
-Todos os especialistas já foram acionados e estão elaborando suas propostas técnicas em seus respectivos painéis agora mesmo.
+ARQUITETURA EM EXECUÇÃO:
+O Pipeline Adversarial de 4 Estágios está executando em paralelo no painel 'Viewport Dinâmico':
+1. Estágio 1 (Contrato & Stubs): Arquiteto define interfaces e tipos no branch swarm/arch.
+2. Estágio 2 (Red-Team TDD): QA gera suíte de testes adversarial em swarm/qa.
+3. Estágio 3 (Best-of-N Especulativo): Múltiplos workers competem em paralelo com Auto-Cura e Circuit Breaker.
+4. Estágio 4 (Auditoria & Quality Gate): Integração automática do branch vencedor após aprovação de testes.
 
 SUA MISSÃO:
-1. Aguarde a conclusão da análise inicial dos especialistas. O orquestrador em Go monitora as caixas postais em background a custo zero de tokens e notificará você automaticamente no terminal quando a barreira de sincronização atingir todas as propostas.
-2. Assim que receber a notificação de que as propostas estão prontas, resgate todas as mensagens pendentes no seu inbox com 'memory_message_pop' (ou 'ai-memory message pop --project swarm-lead').
-3. Sintetize uma visão comparativa das propostas recebidas (Arquitetura, Segurança, Qualidade, Pragmático), aponte os trade-offs e apresente o plano consolidado aqui para o usuário validar.
-Aguarde a notificação do orquestrador para iniciar!`,
+1. Os estágios do pipeline depositam seus artefatos diretamente na sua caixa postal ('swarm-lead').
+2. Você pode consultar o progresso a qualquer momento executando 'ai-memory message list --project swarm-lead' ou 'memory_message_pop'.
+3. Para inspecionar os diffs cumulativos dos branches em tempo real, utilize o comando 'agy-swarm diff'.
+4. Quando o pipeline concluir, faça a síntese final das decisões técnicas e guie o usuário nos próximos passos.`,
 		task,
-		strings.Join(specialistList, "\n"),
 	)
 }
