@@ -463,6 +463,7 @@ func (e *PipelineEngine) runStageAuditMerge(ctx context.Context, survivors []Can
 		if e.cfg.TestCmd != "" {
 			_, tExit, _ := e.dispatcher.Runner.RunCommand(ctx, e.cfg.RepoRoot, e.cfg.TestCmd, 2*time.Minute)
 			if tExit != 0 {
+				_ = exec.Command("git", "-C", e.cfg.RepoRoot, "reset", "--hard", "HEAD~1").Run()
 				res.Error = fmt.Errorf("Quality Gate falhou no branch principal após merge do vencedor %s", best.Role.Name)
 				return res, res.Error
 			}
