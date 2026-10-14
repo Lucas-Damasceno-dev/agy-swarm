@@ -177,7 +177,17 @@ func (e *PipelineEngine) runStageContract(ctx context.Context, role config.RoleC
 			return res, "", res.Error
 		}
 	} else if _, statErr := os.Stat(filepath.Join(wtDir, "Cargo.toml")); statErr == nil {
-		buildOut, bCode, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, "cargo check --workspace", 5*time.Minute)
+		buildCmd := "cargo check --workspace"
+		if e.cfg.TestCmd != "" && strings.Contains(e.cfg.TestCmd, "-p ") {
+			parts := strings.Fields(e.cfg.TestCmd)
+			for i, p := range parts {
+				if p == "-p" && i+1 < len(parts) {
+					buildCmd = fmt.Sprintf("cargo check -p %s", parts[i+1])
+					break
+				}
+			}
+		}
+		buildOut, bCode, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, buildCmd, 5*time.Minute)
 		if bCode != 0 {
 			res.Error = fmt.Errorf("contrato inválido: stubs Rust não compilam:\n%s", buildOut)
 			return res, "", res.Error
@@ -251,7 +261,17 @@ func (e *PipelineEngine) runStageRedTeam(ctx context.Context, role config.RoleCo
 			return res, "", "", res.Error
 		}
 	} else if _, statErr := os.Stat(filepath.Join(wtDir, "Cargo.toml")); statErr == nil {
-		cOut, cCode, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, "cargo test --workspace --no-run", 5*time.Minute)
+		cTestCmd := "cargo test --workspace --no-run"
+		if e.cfg.TestCmd != "" && strings.Contains(e.cfg.TestCmd, "-p ") {
+			parts := strings.Fields(e.cfg.TestCmd)
+			for i, p := range parts {
+				if p == "-p" && i+1 < len(parts) {
+					cTestCmd = fmt.Sprintf("cargo test -p %s --no-run", parts[i+1])
+					break
+				}
+			}
+		}
+		cOut, cCode, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, cTestCmd, 5*time.Minute)
 		if cCode != 0 {
 			res.Error = fmt.Errorf("testes inválidos: testes Rust não compilam contra os traits/structs do Arch:\n%s", cOut)
 			return res, "", "", res.Error
