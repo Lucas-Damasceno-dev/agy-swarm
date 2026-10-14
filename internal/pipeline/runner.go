@@ -41,7 +41,7 @@ func (r *OSProcessRunner) RunEphemeral(ctx context.Context, workdir string, acco
 		return "", -1, fmt.Errorf("falha ao ler ficheiro de prompt (%s): %w", promptFile, err)
 	}
 
-	cmd := exec.CommandContext(execCtx, "agy-profile", accountID, "-i", string(promptBytes))
+	cmd := exec.CommandContext(execCtx, "agy-profile", accountID, "--dangerously-skip-permissions", "-p", string(promptBytes))
 	cmd.Dir = workdir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
