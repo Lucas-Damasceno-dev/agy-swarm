@@ -279,12 +279,11 @@ func main() {
 		return driver.PaneExists("viewport")
 	})
 	if cfg.Prompt != "" {
-		testCmdFlag := ""
-		if *flagTestCmd != "" {
-			testCmdFlag = fmt.Sprintf(" -test-cmd %q", *flagTestCmd)
-		} else {
-			testCmdFlag = " -test-cmd \"go test ./...\""
+		testCmd := *flagTestCmd
+		if testCmd == "" {
+			testCmd = detectDefaultTestCmd(cfg.Workdir)
 		}
+		testCmdFlag := fmt.Sprintf(" -test-cmd %q", testCmd)
 		autoMergeFlag := ""
 		if *flagAutoMerge {
 			autoMergeFlag = " -auto-merge"
@@ -545,10 +544,15 @@ func handlePipeline() {
 	hubClient := agyhub.NewClient("")
 	broker := lease.NewBroker(hubClient)
 
+	testCmd := *pTestCmd
+	if testCmd == "" {
+		testCmd = detectDefaultTestCmd(cwd)
+	}
+
 	cfg := pipeline.EngineConfig{
 		RepoRoot:  cwd,
 		Task:      prompt,
-		TestCmd:   *pTestCmd,
+		TestCmd:   testCmd,
 		DryRun:    *pDryRun,
 		AutoMerge: *pAutoMerge,
 		Roles:     roles,
@@ -558,8 +562,8 @@ func handlePipeline() {
 
 	fmt.Println("⚡ AGY-SWARM // INICIANDO PIPELINE DE VERIFICAÇÃO ADVERSARIAL")
 	fmt.Printf("• Tarefa: %q\n", prompt)
-	if *pTestCmd != "" {
-		fmt.Printf("• Quality Gate (-test-cmd): %s\n", *pTestCmd)
+	if cfg.TestCmd != "" {
+		fmt.Printf("• Quality Gate (-test-cmd): %s\n", cfg.TestCmd)
 	}
 	fmt.Println(strings.Repeat("─", 68))
 
@@ -590,5 +594,16 @@ func handlePipeline() {
 	}
 
 	fmt.Println("\n✨ Pipeline de Verificação Adversarial concluído com sucesso!")
+}
+
+// detectDefaultTestCmd identifica se o repositório é Rust (Cargo.toml) ou Go (go.mod) para selecionar o Quality Gate padrão.
+func detectDefaultTestCmd(repoRoot string) string {
+	if _, err := os.Stat(filepath.Join(repoRoot, "Cargo.toml")); err == nil {
+		return "cargo test --workspace"
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, "go.mod")); err == nil {
+		return "go test ./..."
+	}
+	return "go test ./..."
 }
 

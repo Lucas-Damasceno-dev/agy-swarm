@@ -79,3 +79,24 @@ func TestPidFilePath(t *testing.T) {
 		t.Errorf("caminho de pid não possui sufixo esperado: %s", path)
 	}
 }
+
+func TestDetectDefaultTestCmd(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Default sem nenhum dos dois
+	if cmd := detectDefaultTestCmd(tmpDir); cmd != "go test ./..." {
+		t.Errorf("esperava 'go test ./...', obteve %q", cmd)
+	}
+
+	// Com go.mod
+	_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module test"), 0644)
+	if cmd := detectDefaultTestCmd(tmpDir); cmd != "go test ./..." {
+		t.Errorf("esperava 'go test ./...', obteve %q", cmd)
+	}
+
+	// Com Cargo.toml (prevalece Rust)
+	_ = os.WriteFile(filepath.Join(tmpDir, "Cargo.toml"), []byte("[package]\nname = \"test\""), 0644)
+	if cmd := detectDefaultTestCmd(tmpDir); cmd != "cargo test --workspace" {
+		t.Errorf("esperava 'cargo test --workspace', obteve %q", cmd)
+	}
+}

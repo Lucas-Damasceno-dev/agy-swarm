@@ -59,6 +59,13 @@ func NewPipelineEngine(cfg EngineConfig, broker *lease.Broker, runner ProcessRun
 	merger := worktree.NewMerger(cfg.RepoRoot)
 	builder := NewPromptBuilder(cfg.Task)
 
+	// Injeta CARGO_TARGET_DIR compartilhado para projetos Rust se não estiver definido
+	if _, err := os.Stat(filepath.Join(cfg.RepoRoot, "Cargo.toml")); err == nil {
+		if os.Getenv("CARGO_TARGET_DIR") == "" {
+			_ = os.Setenv("CARGO_TARGET_DIR", filepath.Join(cfg.RepoRoot, "target"))
+		}
+	}
+
 	return &PipelineEngine{
 		cfg:        cfg,
 		dispatcher: dispatcher,
@@ -166,7 +173,13 @@ func (e *PipelineEngine) runStageContract(ctx context.Context, role config.RoleC
 	if _, statErr := os.Stat(filepath.Join(wtDir, "go.mod")); statErr == nil {
 		buildOut, bCode, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, "go build ./...", 2*time.Minute)
 		if bCode != 0 {
-			res.Error = fmt.Errorf("contrato inválido: stubs do Estágio 1 não compilam:\n%s", buildOut)
+			res.Error = fmt.Errorf("contrato inválido: stubs Go não compilam:\n%s", buildOut)
+			return res, "", res.Error
+		}
+	} else if _, statErr := os.Stat(filepath.Join(wtDir, "Cargo.toml")); statErr == nil {
+		buildOut, bCode, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, "cargo check --workspace", 5*time.Minute)
+		if bCode != 0 {
+			res.Error = fmt.Errorf("contrato inválido: stubs Rust não compilam:\n%s", buildOut)
 			return res, "", res.Error
 		}
 	}
@@ -235,6 +248,12 @@ func (e *PipelineEngine) runStageRedTeam(ctx context.Context, role config.RoleCo
 		cOut, cCode, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, "go test -run=^$ ./...", 2*time.Minute)
 		if cCode != 0 {
 			res.Error = fmt.Errorf("testes inválidos: QA escreveu testes que não compilam contra as interfaces do Arch:\n%s", cOut)
+			return res, "", "", res.Error
+		}
+	} else if _, statErr := os.Stat(filepath.Join(wtDir, "Cargo.toml")); statErr == nil {
+		cOut, cCode, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, "cargo test --workspace --no-run", 5*time.Minute)
+		if cCode != 0 {
+			res.Error = fmt.Errorf("testes inválidos: testes Rust não compilam contra os traits/structs do Arch:\n%s", cOut)
 			return res, "", "", res.Error
 		}
 	}
@@ -349,6 +368,8 @@ func (e *PipelineEngine) runStageSpeculative(ctx context.Context, contractDiff s
 			// Blindagem contra Reward Hacking: Restaura a imutabilidade dos testes do Estágio 2
 			_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "*_test.go").Run()
 			_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "**/*_test.go").Run()
+			_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "**/*_test.rs").Run()
+			_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "**/tests/**").Run()
 
 			// Filtro Frio: Executa o test-cmd na worktree do candidato
 			if e.cfg.TestCmd != "" {
@@ -384,6 +405,8 @@ func (e *PipelineEngine) runStageSpeculative(ctx context.Context, contractDiff s
 					// Restaura testes para garantir imutabilidade pós-reparo
 					_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "*_test.go").Run()
 					_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "**/*_test.go").Run()
+					_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "**/*_test.rs").Run()
+					_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "**/tests/**").Run()
 
 					// Reavalia Filtro Frio
 					testOut, tExit, _ = e.dispatcher.Runner.RunCommand(ctx, wtDir, e.cfg.TestCmd, 2*time.Minute)

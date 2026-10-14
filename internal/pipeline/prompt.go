@@ -57,10 +57,11 @@ Papel: %s (%s) | Viés: %s
 `+"```"+`
 
 ## 📋 SUA MISSÃO CIRÚRGICA:
-1. Escreva a suíte de testes unitários e de integração (*_test.go ou arquivo de teste do projeto) que cubra completamente o comportamento esperado.
-2. Seus testes DEVEM ser rigorosos: cubra casos de sucesso, edge-cases, limites numéricos, sanitização e segurança.
-3. IMPORTANTE: Seus testes devem ser fiéis aos contratos acima e DEVEM falhar agora contra os stubs vazios (validando que o teste realmente testa algo novo).
-4. Ao concluir, faça 'git add' e 'git commit' com a mensagem "test(red-team): suite de testes adversariais para validacao".
+1. Escreva a suíte de testes unitários e de integração (*_test.go em Go, ou em arquivos dedicados tests/*.rs / src/*_test.rs em Rust) que cubra completamente o comportamento esperado.
+2. Em projetos Rust: NUNCA declare testes inline com #[cfg(test)] dentro de arquivos de produção (src/*.rs). Use SEMPRE arquivos dedicados (tests/<nome>.rs ou src/<modulo>_test.rs) para garantir a imutabilidade do suite e evitar conflitos com workers.
+3. Seus testes DEVEM ser rigorosos: cubra casos de sucesso, edge-cases, limites numéricos, sanitização e segurança.
+4. IMPORTANTE: Seus testes devem ser fiéis aos contratos acima e DEVEM falhar agora contra os stubs vazios (validando que o teste realmente testa algo novo).
+5. Ao concluir, faça 'git add' e 'git commit' com a mensagem "test(red-team): suite de testes adversariais para validacao".
 
 Atenção: Foco estrito em arquivos de teste. Execute cirurgicamente e encerre!`,
 		role.Name, role.Icon, role.Bias, pb.Task, contractDiff)

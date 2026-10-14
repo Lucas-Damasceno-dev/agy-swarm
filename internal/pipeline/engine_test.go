@@ -188,3 +188,32 @@ func TestGetGitDiffWithFromOnly(t *testing.T) {
 		t.Errorf("esperava added > 0 no diff, obteve added=%d deleted=%d", added, deleted)
 	}
 }
+
+func TestCargoTargetDirInjection(t *testing.T) {
+	tmpDir := t.TempDir()
+	cargoFile := filepath.Join(tmpDir, "Cargo.toml")
+	_ = os.WriteFile(cargoFile, []byte("[workspace]\nmembers = []"), 0644)
+
+	origEnv := os.Getenv("CARGO_TARGET_DIR")
+	defer func() {
+		if origEnv != "" {
+			_ = os.Setenv("CARGO_TARGET_DIR", origEnv)
+		} else {
+			_ = os.Unsetenv("CARGO_TARGET_DIR")
+		}
+	}()
+	_ = os.Unsetenv("CARGO_TARGET_DIR")
+
+	broker := lease.NewBroker(nil, filepath.Join(tmpDir, "leases.json"))
+	cfg := EngineConfig{
+		RepoRoot: tmpDir,
+		Task:     "test rust",
+	}
+
+	_ = NewPipelineEngine(cfg, broker, nil)
+
+	expectedTarget := filepath.Join(tmpDir, "target")
+	if got := os.Getenv("CARGO_TARGET_DIR"); got != expectedTarget {
+		t.Errorf("CARGO_TARGET_DIR não foi injetado corretamente: esperado %s, obtido %s", expectedTarget, got)
+	}
+}
