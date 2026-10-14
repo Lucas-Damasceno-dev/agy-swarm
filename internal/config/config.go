@@ -21,14 +21,14 @@ type Config struct {
 
 // ParseRoles resolve a lista de papéis a partir de uma string de roles ou contagem.
 func ParseRoles(rolesArg string, nArg int) ([]RoleConfig, error) {
-	all := DefaultRoles()
+	allAvailable := AllRoles()
 	if rolesArg == "" && nArg <= 0 {
-		return all, nil
+		return DefaultRoles(), nil
 	}
 
 	if rolesArg != "" {
 		parts := strings.Split(rolesArg, ",")
-		selected := []RoleConfig{all[0]} // Maestro sempre presente no pane 0
+		selected := []RoleConfig{allAvailable[0]} // Maestro sempre presente no pane 0
 		seen := map[RoleType]bool{RoleLead: true}
 
 		for _, p := range parts {
@@ -37,7 +37,7 @@ func ParseRoles(rolesArg string, nArg int) ([]RoleConfig, error) {
 				continue
 			}
 			found := false
-			for _, r := range all {
+			for _, r := range allAvailable {
 				if r.Type == clean && !seen[r.Type] {
 					selected = append(selected, r)
 					seen[r.Type] = true
@@ -53,13 +53,13 @@ func ParseRoles(rolesArg string, nArg int) ([]RoleConfig, error) {
 	}
 
 	if nArg > 0 {
-		if nArg < 1 || nArg > len(all) {
-			return nil, fmt.Errorf("número de agentes inválido (%d), deve ser entre 1 e %d", nArg, len(all))
+		if nArg < 1 || nArg > len(allAvailable) {
+			return nil, fmt.Errorf("número de agentes inválido (%d), deve ser entre 1 e %d", nArg, len(allAvailable))
 		}
-		return all[:nArg], nil
+		return allAvailable[:nArg], nil
 	}
 
-	return all, nil
+	return DefaultRoles(), nil
 }
 
 // NewConfig constrói e valida a configuração inicial a partir do ambiente.

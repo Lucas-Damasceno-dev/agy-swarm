@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/multiplexer"
@@ -285,8 +286,47 @@ func (d *Driver) SendControl(role config.RoleType, key string) error {
 	return nil
 }
 
-// SendKeys envia comandos diretamente para o PTY combinando envio literal sanitizado e tecla Enter.
+// IsPaneIdle verifica se o painel está ocioso inspecionando as últimas linhas do buffer via capture-pane.
+func (d *Driver) IsPaneIdle(role config.RoleType) (bool, error) {
+	p, ok := d.Panes[role]
+	if !ok || p.ID == "" {
+		return false, fmt.Errorf("painel para papel %s não encontrado", role)
+	}
+
+	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", p.ID, "-S", "-5").Output()
+	if err != nil {
+		return false, fmt.Errorf("falha ao capturar buffer do pane %s: %w", p.ID, err)
+	}
+
+	content := strings.ToLower(string(out))
+	busyIndicators := []string{
+		"(esc to cancel)",
+		"thinking...",
+		"running tool",
+		"executing",
+		"generating...",
+	}
+	for _, ind := range busyIndicators {
+		if strings.Contains(content, ind) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// SendKeys envia comandos diretamente para o PTY combinando envio literal sanitizado e tecla Enter,
+// aguardando brevemente se o painel estiver no meio de uma geração ou tool.
 func (d *Driver) SendKeys(role config.RoleType, text string) error {
+	// Verifica prontidão do pane antes de injetar caracteres
+	if idle, err := d.IsPaneIdle(role); err == nil && !idle {
+		for i := 0; i < 20; i++ {
+			time.Sleep(150 * time.Millisecond)
+			if idle, err := d.IsPaneIdle(role); err == nil && idle {
+				break
+			}
+		}
+	}
+
 	if err := d.SendLiteral(role, text); err != nil {
 		return err
 	}

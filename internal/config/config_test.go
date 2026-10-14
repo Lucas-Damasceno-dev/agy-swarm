@@ -42,6 +42,20 @@ func TestParseRolesCount(t *testing.T) {
 	}
 }
 
+func TestParseRolesTenAgents(t *testing.T) {
+	roles, err := ParseRoles("", 10)
+	if err != nil {
+		t.Fatalf("esperado sem erro para 10 agentes, obtido: %v", err)
+	}
+	if len(roles) != 10 {
+		t.Fatalf("esperado 10 papéis, obtido: %d", len(roles))
+	}
+	if roles[9].Type != RoleAdversary {
+		t.Errorf("décimo papel esperado adversary, obtido: %s", roles[9].Type)
+	}
+}
+
+
 func TestParseRolesInvalid(t *testing.T) {
 	_, err := ParseRoles("invalido", 0)
 	if err == nil {

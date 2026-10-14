@@ -54,6 +54,10 @@ func (m *mockNotifier) SendKeys(role config.RoleType, text string) error {
 	return nil
 }
 
+func (m *mockNotifier) IsPaneIdle(role config.RoleType) (bool, error) {
+	return true, nil
+}
+
 func TestWatcherWithMockNotifier(t *testing.T) {
 	notifier := newMockNotifier()
 	client := memory.NewClient()
@@ -240,4 +244,56 @@ func TestWatcher_Lifecycle_ContextAndStop(t *testing.T) {
 
 	// Valida cancelamento do contexto
 	cancel()
+}
+
+func TestWatcher_SyncBarrierAndDebounce(t *testing.T) {
+	mockLister := newMockMessageLister()
+	mockMux := tmux.NewMockMultiplexer("test-barrier")
+
+	roles := []config.RoleConfig{
+		{Type: config.RoleLead, Name: "Maestro", Project: "swarm-lead"},
+		{Type: config.RoleArch, Name: "Arquiteto", Project: "swarm-arch"},
+		{Type: config.RoleHacker, Name: "Pragmatico", Project: "swarm-hacker"},
+	}
+	_ = mockMux.BuildLayout(roles)
+
+	w := memory.NewWatcher(mockLister, mockMux, roles)
+	// ExpectedSpecialists = 2 (Arch + Hacker)
+
+	// Rodada 1: Nenhuma mensagem para o Maestro
+	w.PollOnce()
+	if w.IsBarrierFired() {
+		t.Fatalf("barreira não deveria disparar sem mensagens")
+	}
+	if len(mockMux.GetBuffer(config.RoleLead)) > 0 {
+		t.Fatalf("Maestro não deveria ter recebido notificação")
+	}
+
+	// Rodada 2: Apenas 1 especialista respondeu (quórum = 2)
+	mockLister.SetMessages("swarm-lead", []memory.Message{{ID: "msg-1"}})
+	w.PollOnce()
+	if w.IsBarrierFired() {
+		t.Fatalf("barreira não deveria disparar com apenas 1 de 2 propostas")
+	}
+	if len(mockMux.GetBuffer(config.RoleLead)) > 0 {
+		t.Fatalf("Maestro ainda não deveria ser acordado antes da barreira")
+	}
+
+	// Rodada 3: 2 especialistas responderam -> Barreira deve disparar!
+	mockLister.SetMessages("swarm-lead", []memory.Message{{ID: "msg-1"}, {ID: "msg-2"}})
+	w.PollOnce()
+	if !w.IsBarrierFired() {
+		t.Fatalf("barreira deveria ter disparado com 2 propostas")
+	}
+	buf := mockMux.GetBuffer(config.RoleLead)
+	if !strings.Contains(buf, "Barreira de sincronização concluída") {
+		t.Fatalf("notificação esperada não encontrada no buffer do Maestro: %s", buf)
+	}
+
+	// Rodada 4: Mesma quantidade (2 mensagens) -> Debounce não deve re-enviar
+	initialLen := len(buf)
+	w.PollOnce()
+	if len(mockMux.GetBuffer(config.RoleLead)) != initialLen {
+		t.Fatalf("debounce falhou: mensagem reenviada sem alteração no inbox")
+	}
 }

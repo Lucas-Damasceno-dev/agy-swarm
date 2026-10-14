@@ -23,3 +23,11 @@ func TestPipelineOrder(t *testing.T) {
 		t.Errorf("quarto merge deve ser sec, obtido: %s", PipelineOrder[3])
 	}
 }
+
+func TestRebaseBranch_Nonexistent(t *testing.T) {
+	m := NewMerger(t.TempDir())
+	err := m.RebaseBranch(config.RoleHacker, "HEAD")
+	if err == nil {
+		t.Errorf("esperado erro ao rebasear branch inexistente em repo vazio")
+	}
+}

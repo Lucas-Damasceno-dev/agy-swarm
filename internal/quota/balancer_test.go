@@ -39,3 +39,22 @@ func TestAssignRolesFallback(t *testing.T) {
 		t.Errorf("esperado perfil default em fallback, obtido: %s", reassigned[0].Profile)
 	}
 }
+
+func TestFindBestReserve(t *testing.T) {
+	pool := []AccountScore{
+		{ID: "account6", Score: 40.0},
+		{ID: "account7", Score: 85.5},
+		{ID: "account8", Score: 60.0},
+	}
+
+	best := FindBestReserve(pool)
+	if best == nil || best.ID != "account7" {
+		t.Fatalf("esperado account7 como melhor reserva, obtido: %v", best)
+	}
+
+	emptyBest := FindBestReserve(nil)
+	if emptyBest != nil {
+		t.Errorf("esperado nil para pool vazio, obtido: %v", emptyBest)
+	}
+}
+

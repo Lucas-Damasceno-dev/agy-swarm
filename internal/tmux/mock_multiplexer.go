@@ -230,3 +230,10 @@ func (m *MockMultiplexer) PaneExists(role config.RoleType) bool {
 	return ok
 }
 
+// IsPaneIdle simula a verificação de painel ocioso.
+func (m *MockMultiplexer) IsPaneIdle(role config.RoleType) (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return true, nil
+}
+

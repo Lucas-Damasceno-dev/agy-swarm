@@ -57,13 +57,31 @@ func (m *Merger) ExecutePipeline(activeRoles []config.RoleConfig, testCmd string
 		mergeCmd.Dir = m.RepoRoot
 		mergeCmd.Stderr = &stderr
 		if err := mergeCmd.Run(); err != nil {
-			// Conflito de merge: aborta e reverte
+			// Aborta o merge em conflito
 			_ = exec.Command("git", "merge", "--abort").Run()
-			res.Success = false
-			res.Error = fmt.Errorf("conflito de merge no branch %s: %s", branchName, stderr.String())
-			res.Message = "Conflito detectado; merge abortado e branch devolvido para rebase"
-			results = append(results, res)
-			return results, res.Error
+
+			// Tentativa de Relay Rebase automático para resolver divergências limpas
+			if rebaseErr := m.RebaseBranch(role, "HEAD"); rebaseErr == nil {
+				// Retry do merge após rebase limpo
+				var retryStderr bytes.Buffer
+				retryCmd := exec.Command("git", "merge", "--no-ff", branchName, "-m", fmt.Sprintf("swarm(merge): integrando contribuição de %s (após relay rebase)", role))
+				retryCmd.Dir = m.RepoRoot
+				retryCmd.Stderr = &retryStderr
+				if retryErr := retryCmd.Run(); retryErr != nil {
+					_ = exec.Command("git", "merge", "--abort").Run()
+					res.Success = false
+					res.Error = fmt.Errorf("conflito de merge persistente no branch %s após rebase: %s", branchName, retryStderr.String())
+					res.Message = "Conflito irresolvível automaticamente; merge abortado"
+					results = append(results, res)
+					return results, res.Error
+				}
+			} else {
+				res.Success = false
+				res.Error = fmt.Errorf("conflito de merge no branch %s: %s (rebase falhou: %v)", branchName, stderr.String(), rebaseErr)
+				res.Message = "Conflito detectado; merge abortado e branch requer intervenção manual"
+				results = append(results, res)
+				return results, res.Error
+			}
 		}
 
 		// 2. Se houver comando de teste configurado, executa o Quality Gate
@@ -89,4 +107,18 @@ func (m *Merger) ExecutePipeline(activeRoles []config.RoleConfig, testCmd string
 	}
 
 	return results, nil
+}
+
+// RebaseBranch executa o rebase do branch de trabalho sobre a base especificada.
+func (m *Merger) RebaseBranch(role config.RoleType, base string) error {
+	branchName := fmt.Sprintf("swarm/%s", role)
+	cmd := exec.Command("git", "rebase", base, branchName)
+	cmd.Dir = m.RepoRoot
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		_ = exec.Command("git", "rebase", "--abort").Run()
+		return fmt.Errorf("falha no rebase do branch %s sobre %s: %s", branchName, base, stderr.String())
+	}
+	return nil
 }

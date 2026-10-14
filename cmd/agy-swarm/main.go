@@ -26,7 +26,7 @@ import (
 var (
 	flagSession   = flag.String("session", "agy-swarm", "Nome da sessão tmux")
 	flagRoles     = flag.String("roles", "", "Lista de papéis separados por vírgula (ex: arch,hacker,qa)")
-	flagCount     = flag.Int("n", 0, "Número total de agentes a inicializar (1 a 5)")
+	flagCount     = flag.Int("n", 0, "Número total de agentes a inicializar (1 a 10)")
 	flagTestCmd   = flag.String("test-cmd", "", "Comando de teste para o Quality Gate de merge (ex: go test ./...)")
 	flagDryRun    = flag.Bool("dry-run", false, "Simula criação sem iniciar o tmux")
 	flagForce     = flag.Bool("force", false, "Força remoção de worktrees com alterações pendentes")
@@ -48,7 +48,7 @@ Uso:
 Flags:
   -session string    Nome da sessão tmux (padrão: "agy-swarm")
   -roles string      Subconjunto de papéis (ex: "arch,qa" ou "arch,hacker,sec")
-  -n int             Quantidade de agentes (1 a 5)
+  -n int             Quantidade de agentes (1 a 10)
   -test-cmd string   Comando para Quality Gate antes de cada merge
   -auto-merge        Executa integração sequencial automaticamente quando testes passarem
   -force             Força limpeza de worktrees sujos
@@ -149,8 +149,11 @@ func main() {
 	hubClient := agyhub.NewClient(cfg.SocketPath)
 	if hubClient.IsAvailable() {
 		balancer := quota.NewBalancer(hubClient)
-		if balancedRoles, err := balancer.AssignRoles(cfg.Roles); err == nil {
-			cfg.Roles = balancedRoles
+		if alloc, err := balancer.AssignClusterRoles(cfg.Roles); err == nil {
+			cfg.Roles = alloc.Roles
+			if len(alloc.StandbyPool) > 0 {
+				fmt.Printf("🛡️ Pool de Hot-Standby: %d contas reservas prontas para rotação.\n", len(alloc.StandbyPool))
+			}
 		}
 	}
 
@@ -250,8 +253,8 @@ func main() {
 	// Aguarda prontidão da sessão Tmux via polling determinístico
 	_ = PollUntil(3*time.Second, 20*time.Millisecond, driver.SessionExists)
 
-	// Inicializa os processos nos painéis
-	for _, r := range cfg.Roles {
+	// Inicializa os processos nos painéis com staggering
+	for i, r := range cfg.Roles {
 		path := wtPaths[r.Type]
 		var launchCmd string
 		tmpFile := promptFiles[r.Type]
@@ -266,6 +269,11 @@ func main() {
 		})
 		if err := driver.SendKeys(r.Type, launchCmd); err != nil {
 			fmt.Fprintf(os.Stderr, "Aviso: falha ao enviar comando para %s: %v\n", r.Type, err)
+		}
+
+		// Staggering: intervalo de 1.5s entre inícios para evitar thundering herd de CPU, disco e OAuth
+		if i < len(cfg.Roles)-1 {
+			time.Sleep(1500 * time.Millisecond)
 		}
 	}
 

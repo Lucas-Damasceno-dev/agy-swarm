@@ -40,18 +40,30 @@ func NewBalancer(client *agyhub.Client) *Balancer {
 	return &Balancer{Client: client}
 }
 
-// AssignRoles reordena os perfis dos papéis para maximizar a durabilidade do enxame:
+// ClusterAllocation armazena os papéis balanceados e o pool de contas reservas (hot-standby).
+type ClusterAllocation struct {
+	Roles       []config.RoleConfig
+	StandbyPool []AccountScore
+}
+
+// AssignClusterRoles distribui as contas do cluster com priorização inteligente:
 // - Maestro recebe a conta com MENOR cota restante (apenas orquestra/planeja)
 // - Hacker/Coder recebe a conta com MAIOR cota restante (gera código intensivamente)
-// - Arquiteto, Segurança e QA recebem as contas intermediárias.
-func (b *Balancer) AssignRoles(roles []config.RoleConfig) ([]config.RoleConfig, error) {
+// - Especialistas intermediários recebem contas equilibradas
+// - Contas excedentes (ex: 5 ativas de 10) formam o pool de Hot-Standby.
+func (b *Balancer) AssignClusterRoles(roles []config.RoleConfig) (ClusterAllocation, error) {
+	allocation := ClusterAllocation{
+		Roles:       roles,
+		StandbyPool: make([]AccountScore, 0),
+	}
+
 	if !b.Client.IsAvailable() {
-		return roles, nil // Fallback gracioso: mantém os perfis default
+		return allocation, nil // Fallback gracioso: mantém os perfis default
 	}
 
 	state, err := b.Client.GetClusterState()
 	if err != nil || len(state.Profiles) == 0 {
-		return roles, nil
+		return allocation, nil
 	}
 
 	var scores []AccountScore
@@ -72,7 +84,7 @@ func (b *Balancer) AssignRoles(roles []config.RoleConfig) ([]config.RoleConfig, 
 	}
 
 	if len(scores) < len(roles) {
-		return roles, nil // Não há contas saudáveis suficientes para o mapeamento
+		return allocation, nil // Não há contas saudáveis suficientes para o mapeamento
 	}
 
 	// Ordena as contas do menor score (menor cota) para o maior score (maior cota)
@@ -80,44 +92,73 @@ func (b *Balancer) AssignRoles(roles []config.RoleConfig) ([]config.RoleConfig, 
 		return scores[i].Score < scores[j].Score
 	})
 
-	// Hierarquia de consumo de tokens:
-	// 0: Maestro (menor consumo) -> scores[0] (menor cota)
-	// 1: Arquiteto (médio) -> scores[1]
-	// 2: Segurança (médio-alto) -> scores[2]
-	// 3: QA (alto) -> scores[3]
-	// 4: Hacker (altíssimo consumo de código) -> scores[len-1] (maior cota)
 	reassigned := make([]config.RoleConfig, len(roles))
 	copy(reassigned, roles)
 
-	// Mapeia Maestro sempre para a conta de menor score
+	usedIndices := make(map[int]bool)
+
+	// 1. Maestro sempre recebe a conta de menor cota disponível (scores[0])
 	for i := range reassigned {
 		if reassigned[i].Type == config.RoleLead {
 			reassigned[i].Profile = scores[0].ID
+			usedIndices[0] = true
 			break
 		}
 	}
 
-	// Mapeia os especialistas ordenando pelo peso de consumo
-	specialistOrder := []config.RoleType{
-		config.RoleArch,
-		config.RoleSec,
-		config.RoleQA,
-		config.RoleHacker,
-	}
-
-	// As contas restantes de scores[1:] estão em ordem crescente de cota
-	availableScores := scores[1:]
-	for idx, sRole := range specialistOrder {
-		if idx >= len(availableScores) {
+	// 2. Hacker sempre recebe a conta com a maior cota absoluta do cluster (scores[len-1])
+	hackerIdx := len(scores) - 1
+	for i := range reassigned {
+		if reassigned[i].Type == config.RoleHacker {
+			reassigned[i].Profile = scores[hackerIdx].ID
+			usedIndices[hackerIdx] = true
 			break
 		}
-		for i := range reassigned {
-			if reassigned[i].Type == sRole {
-				reassigned[i].Profile = availableScores[idx].ID
-				break
-			}
+	}
+
+	// 3. Distribui as contas intermediárias para os demais papéis
+	scoreCursor := 1
+	for i := range reassigned {
+		if reassigned[i].Type == config.RoleLead || reassigned[i].Type == config.RoleHacker {
+			continue
+		}
+		for scoreCursor < len(scores) && usedIndices[scoreCursor] {
+			scoreCursor++
+		}
+		if scoreCursor < len(scores) {
+			reassigned[i].Profile = scores[scoreCursor].ID
+			usedIndices[scoreCursor] = true
+			scoreCursor++
 		}
 	}
 
-	return reassigned, nil
+	// 4. Todas as contas não utilizadas viram pool de reserva Hot-Standby
+	for idx, s := range scores {
+		if !usedIndices[idx] {
+			allocation.StandbyPool = append(allocation.StandbyPool, s)
+		}
+	}
+
+	allocation.Roles = reassigned
+	return allocation, nil
+}
+
+// AssignRoles é o wrapper de compatibilidade direta que retorna a lista reordenada de papéis.
+func (b *Balancer) AssignRoles(roles []config.RoleConfig) ([]config.RoleConfig, error) {
+	alloc, err := b.AssignClusterRoles(roles)
+	return alloc.Roles, err
+}
+
+// FindBestReserve retorna a melhor conta reserva com maior score para hot-swap.
+func FindBestReserve(pool []AccountScore) *AccountScore {
+	if len(pool) == 0 {
+		return nil
+	}
+	best := &pool[0]
+	for i := 1; i < len(pool); i++ {
+		if pool[i].Score > best.Score {
+			best = &pool[i]
+		}
+	}
+	return best
 }

@@ -10,6 +10,7 @@ type PaneNotifier interface {
 	SendLiteral(role config.RoleType, text string) error
 	SendControl(role config.RoleType, key string) error
 	SendKeys(role config.RoleType, text string) error
+	IsPaneIdle(role config.RoleType) (bool, error)
 }
 
 // Multiplexer define o contrato desacoplado para orquestração de terminais, sessões, splits e layouts.

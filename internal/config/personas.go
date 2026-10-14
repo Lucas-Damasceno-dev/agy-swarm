@@ -9,11 +9,16 @@ import (
 type RoleType string
 
 const (
-	RoleLead   RoleType = "lead"
-	RoleArch   RoleType = "arch"
-	RoleSec    RoleType = "sec"
-	RoleQA     RoleType = "qa"
-	RoleHacker RoleType = "hacker"
+	RoleLead      RoleType = "lead"
+	RoleArch      RoleType = "arch"
+	RoleSec       RoleType = "sec"
+	RoleQA        RoleType = "qa"
+	RoleHacker    RoleType = "hacker"
+	RoleReviewer  RoleType = "reviewer"
+	RoleDoc       RoleType = "doc"
+	RoleBench     RoleType = "bench"
+	RoleRefactor  RoleType = "refactor"
+	RoleAdversary RoleType = "adversary"
 )
 
 // RoleConfig define os metadados de execução de um agente do enxame.
@@ -84,6 +89,64 @@ func DefaultRoles() []RoleConfig {
 	}
 }
 
+// AllRoles retorna todas as 10 personas possíveis para suportar clusters completos de 10 contas.
+func AllRoles() []RoleConfig {
+	roles := DefaultRoles()
+	extended := []RoleConfig{
+		{
+			Type:        RoleReviewer,
+			Name:        "Code-Reviewer",
+			Profile:     "account6",
+			Project:     "swarm-reviewer",
+			Icon:        "🔍",
+			Description: "Especialista em code review, conformidade estrita de tipagem, linting e legibilidade.",
+			Bias:        "Puxa para precisão de diffs, legibilidade de código, convenções idiomáticas e higiene de commits.",
+			Permission:  "always-proceed",
+		},
+		{
+			Type:        RoleDoc,
+			Name:        "Tech-Writer",
+			Profile:     "account7",
+			Project:     "swarm-doc",
+			Icon:        "📝",
+			Description: "Especialista em documentação viva, especificações de arquitetura, READMEs e diagramas Mermaid.",
+			Bias:        "Puxa para documentação exaustiva, precisão de contratos, ADRs e sincronização de wikis.",
+			Permission:  "always-proceed",
+		},
+		{
+			Type:        RoleBench,
+			Name:        "SRE-Performance",
+			Profile:     "account8",
+			Project:     "swarm-bench",
+			Icon:        "⏱️",
+			Description: "Especialista em performance, profiling, benchmarks de CPU/memória e escalabilidade.",
+			Bias:        "Puxa para complexidade algorítmica ótima, zero alocações desnecessárias e concorrência eficiente.",
+			Permission:  "always-proceed",
+		},
+		{
+			Type:        RoleRefactor,
+			Name:        "Refactor-Sweeper",
+			Profile:     "account9",
+			Project:     "swarm-refactor",
+			Icon:        "🧹",
+			Description: "Especialista em limpeza de código morto, consolidação de duplicatas e higienização de dependências.",
+			Bias:        "Puxa para remoção agressiva de débitos técnicos e simplificação de estruturas antigas.",
+			Permission:  "always-proceed",
+		},
+		{
+			Type:        RoleAdversary,
+			Name:        "Red-Team",
+			Profile:     "account10",
+			Project:     "swarm-adversary",
+			Icon:        "🎯",
+			Description: "Especialista em segurança ofensiva, testes adversariais e busca por brechas e edge-cases.",
+			Bias:        "Puxa para validação de hipóteses de quebra, exploits, injeções e testes de estresse.",
+			Permission:  "always-proceed",
+		},
+	}
+	return append(roles, extended...)
+}
+
 // GeneratePersonaRule gera o conteúdo de markdown injetado em .gemini/rules/swarm-persona.md.
 func GeneratePersonaRule(role RoleConfig, allRoles []RoleConfig) string {
 	var peers []string
@@ -112,11 +175,19 @@ Você tem acesso ao MCP e CLI 'ai-memory'. Seus pares no enxame são:
 2. **Consumir mensagem:** Use 'ai-memory message pop --project %s' ou tool 'memory_message_pop'.
 3. **Enviar réplica/resposta:** Use 'ai-memory message send --project %s --to-project <projeto_alvo> --body "<conteudo>"' ou tool 'memory_message_send'.
 
-## 🛠️ AMBIENTE DE EXECUÇÃO (Git Worktree)
+## 🛠️ AMBIENTE DE EXECUÇÃO (Git Worktree & Escopo Ortogonal)
 Se você for um especialista em fase de implementação pós-debate, você opera isolado em seu Git Worktree:
 - Diretório de trabalho: '.worktrees/worker-%s'
 - Branch ativo: 'swarm/%s'
-- Comite suas alterações no seu branch local. O Maestro fará o review e merge sequencial.
+
+### Regras de Ouro para Evitar Conflitos de Merge:
+1. **Ortogonalidade de Escopo:**
+   - 📐 Arquiteto: interfaces, contratos, assinaturas e abstrações (DIP/ISP).
+   - ⚡ Pragmático: lógica de execução, comandos de terminal e núcleo do app.
+   - 🛡️ Segurança: sanitização de input, runtime 0600/0700 e permissões.
+   - 🧪 QA-Testes: focado estritamente em arquivos '*_test.go' e mocks isolados (evita colisões com código de produção).
+2. **Rebase de Relay:** Se o branch base sofrer atualização ou merge prévio, sincronize com 'git rebase main' ou solicite o rebase via Maestro.
+3. Comite suas alterações no seu branch local. O Maestro fará o review e integração com Quality Gate.
 `, role.Name, role.Icon, role.Name, role.Profile, role.Project, role.Description, role.Bias, strings.Join(peers, "\n"), role.Project, role.Project, role.Project, role.Type, role.Type)
 }
 
@@ -167,11 +238,10 @@ O desafio já foi despachado para as caixas postais dos seus especialistas:
 Todos os especialistas já foram acionados e estão elaborando suas propostas técnicas em seus respectivos painéis agora mesmo.
 
 SUA MISSÃO:
-1. Monitore o recebimento das réplicas dos especialistas na sua caixa de entrada usando a tool 'memory_message_list' com box="inbox" ou executando no terminal:
-   ai-memory message list --project swarm-lead --json
-2. Conforme as mensagens chegarem, resgate-as com 'memory_message_pop' (ou 'ai-memory message pop --project swarm-lead').
-3. Quando receber as propostas dos especialistas, sintetize uma visão comparativa dos 4 pontos de vista (Arquitetura, Segurança, Qualidade, Pragmático), destaque os principais trade-offs e apresente o plano consolidado aqui para o usuário validar.
-Inicie o monitoramento agora!`,
+1. Aguarde a conclusão da análise inicial dos especialistas. O orquestrador em Go monitora as caixas postais em background a custo zero de tokens e notificará você automaticamente no terminal quando a barreira de sincronização atingir todas as propostas.
+2. Assim que receber a notificação de que as propostas estão prontas, resgate todas as mensagens pendentes no seu inbox com 'memory_message_pop' (ou 'ai-memory message pop --project swarm-lead').
+3. Sintetize uma visão comparativa das propostas recebidas (Arquitetura, Segurança, Qualidade, Pragmático), aponte os trade-offs e apresente o plano consolidado aqui para o usuário validar.
+Aguarde a notificação do orquestrador para iniciar!`,
 		task,
 		strings.Join(specialistList, "\n"),
 	)

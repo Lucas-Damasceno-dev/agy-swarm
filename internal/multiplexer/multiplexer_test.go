@@ -102,6 +102,10 @@ func (m *MockMultiplexer) SendKeys(role config.RoleType, text string) error {
 	return nil
 }
 
+func (m *MockMultiplexer) IsPaneIdle(role config.RoleType) (bool, error) {
+	return true, nil
+}
+
 func TestMockMultiplexerSatisfiesInterfaces(t *testing.T) {
 	mock := NewMockMultiplexer()
 	var mux multiplexer.Multiplexer = mock
