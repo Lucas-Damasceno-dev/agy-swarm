@@ -15,9 +15,11 @@ import (
 
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/agyhub"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/lease"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/memory"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/multiplexer"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/notify"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/pipeline"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/quota"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/tmux"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/worktree"
@@ -28,6 +30,7 @@ var (
 	flagRoles     = flag.String("roles", "", "Lista de papéis separados por vírgula (ex: arch,hacker,qa)")
 	flagCount     = flag.Int("n", 0, "Número total de agentes a inicializar (1 a 10)")
 	flagTestCmd   = flag.String("test-cmd", "", "Comando de teste para o Quality Gate de merge (ex: go test ./...)")
+	flagPipeline  = flag.Bool("pipeline", false, "Executa o pipeline determinístico adversarial de 4 estágios")
 	flagDryRun    = flag.Bool("dry-run", false, "Simula criação sem iniciar o tmux")
 	flagForce     = flag.Bool("force", false, "Força remoção de worktrees com alterações pendentes")
 	flagDetach    = flag.Bool("detach", false, "Mantém a sessão rodando em segundo plano após fechar o terminal")
@@ -37,23 +40,25 @@ var (
 func usage() {
 	fmt.Fprintf(os.Stderr, `⚡ AGY-SWARM // Terminal Multi-Agent Orchestrator
 Uso:
+  agy-swarm pipeline [flags] ["tarefa/desafio"]
   agy-swarm [flags] ["tarefa/desafio inicial"]
   agy-swarm stop [--force]
   agy-swarm attach
   agy-swarm diff
-  agy-swarm dashboard
+  agy-swarm dashboard [--watch]
   agy-swarm status
   agy-swarm clean [--force]
 
 Flags:
+  -pipeline          Executa o Pipeline de Verificação Adversarial (4 estágios: Contract -> Red-Team TDD -> Best-of-N -> Merge)
   -session string    Nome da sessão tmux (padrão: "agy-swarm")
   -roles string      Subconjunto de papéis (ex: "arch,qa" ou "arch,hacker,sec")
   -n int             Quantidade de agentes (1 a 10)
   -test-cmd string   Comando para Quality Gate antes de cada merge
-  -auto-merge        Executa integração sequencial automaticamente quando testes passarem
+  -auto-merge        Executa integração do vencedor automaticamente quando testes passarem
   -force             Força limpeza de worktrees sujos
   -detach            Mantém a sessão rodando em segundo plano após fechar o terminal
-  -dry-run           Exibe planejamento de splits sem executar
+  -dry-run           Exibe planejamento sem executar
 `)
 	os.Exit(1)
 }
@@ -109,6 +114,9 @@ func writeSecureFile(path string, data []byte) error {
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "pipeline":
+			handlePipeline()
+			return
 		case "daemon":
 			handleDaemon()
 			return
@@ -138,6 +146,11 @@ func main() {
 
 	flag.Parse()
 	prompt := strings.Join(flag.Args(), " ")
+
+	if *flagPipeline {
+		handlePipeline()
+		return
+	}
 
 	cfg, err := config.NewConfig(*flagSession, *flagRoles, *flagCount, prompt)
 	if err != nil {
@@ -253,44 +266,42 @@ func main() {
 	// Aguarda prontidão da sessão Tmux via polling determinístico
 	_ = PollUntil(3*time.Second, 20*time.Millisecond, driver.SessionExists)
 
-	// Inicializa os processos nos painéis com staggering
-	for i, r := range cfg.Roles {
-		path := wtPaths[r.Type]
-		var launchCmd string
-		tmpFile := promptFiles[r.Type]
-		if cfg.Prompt != "" {
-			launchCmd = fmt.Sprintf("cd %s && agy-profile %s -i \"$(cat %s)\"", path, r.Profile, tmpFile)
-		} else {
-			launchCmd = fmt.Sprintf("cd %s && agy-profile %s", path, r.Profile)
-		}
-		// Aguarda o painel específico estar pronto antes do envio de comandos
-		PollUntil(1*time.Second, 10*time.Millisecond, func() bool {
-			return driver.PaneExists(r.Type)
-		})
-		if err := driver.SendKeys(r.Type, launchCmd); err != nil {
-			fmt.Fprintf(os.Stderr, "Aviso: falha ao enviar comando para %s: %v\n", r.Type, err)
-		}
-
-		// Staggering: intervalo de 1.5s entre inícios para evitar thundering herd de CPU, disco e OAuth
-		if i < len(cfg.Roles)-1 {
-			time.Sleep(1500 * time.Millisecond)
-		}
+	// Inicializa os processos nos painéis do Layout de 3 Zonas
+	// 1. Pane 0 (Maestro): Inicia agy com o perfil do Maestro no repositório principal
+	maestroRole := cfg.Roles[0]
+	maestroPath := wtPaths[maestroRole.Type]
+	maestroPrompt := promptFiles[maestroRole.Type]
+	var maestroCmd string
+	if cfg.Prompt != "" {
+		maestroCmd = fmt.Sprintf("cd %s && agy-profile %s -i \"$(cat %s)\"", maestroPath, maestroRole.Profile, maestroPrompt)
+	} else {
+		maestroCmd = fmt.Sprintf("cd %s && agy-profile %s", maestroPath, maestroRole.Profile)
 	}
 
-	// Descarta potenciais modais de boas-vindas com Escape após prontidão de todos os painéis
+	PollUntil(1*time.Second, 10*time.Millisecond, func() bool {
+		return driver.PaneExists(maestroRole.Type)
+	})
+	if err := driver.SendKeys(maestroRole.Type, maestroCmd); err != nil {
+		fmt.Fprintf(os.Stderr, "Aviso: falha ao enviar comando para o Maestro: %v\n", err)
+	}
+
+	// 2. Pane Top-Right (Telemetria Viva): Dispara dashboard contínuo
+	PollUntil(1*time.Second, 10*time.Millisecond, func() bool {
+		return driver.PaneExists("telemetry")
+	})
+	_ = driver.SendKeys("telemetry", "agy-swarm dashboard --watch")
+
+	// 3. Pane Bottom-Right (Viewport Dinâmico): Mensagem inicial
+	PollUntil(1*time.Second, 10*time.Millisecond, func() bool {
+		return driver.PaneExists("viewport")
+	})
+	_ = driver.SendKeys("viewport", "echo '⚡ Viewport Dinâmico: aguardando despacho de workers efêmeros...'")
+
+	// Descarta potenciais modais de boas-vindas com Escape no Maestro
 	go func() {
-		PollUntil(3*time.Second, 50*time.Millisecond, func() bool {
-			for _, r := range cfg.Roles {
-				if !driver.PaneExists(r.Type) {
-					return false
-				}
-			}
-			return true
-		})
-		for _, r := range cfg.Roles {
-			_ = driver.SendControl(r.Type, "Escape")
-			_ = driver.SendControl(r.Type, "Escape")
-		}
+		time.Sleep(1 * time.Second)
+		_ = driver.SendControl(maestroRole.Type, "Escape")
+		_ = driver.SendControl(maestroRole.Type, "Escape")
 	}()
 
 	// Dispara o daemon supervisor em segundo plano
@@ -504,3 +515,79 @@ func handleStatus() {
 		fmt.Printf("  %s %-14s (%-12s): %s\n", r.Icon, r.Name, r.Project, status)
 	}
 }
+
+func handlePipeline() {
+	cwd, _ := os.Getwd()
+
+	fs := flag.NewFlagSet("pipeline", flag.ExitOnError)
+	pRoles := fs.String("roles", "", "Lista de papéis separados por vírgula")
+	pCount := fs.Int("n", 0, "Número total de agentes (1 a 10)")
+	pTestCmd := fs.String("test-cmd", "", "Comando de teste para o Quality Gate")
+	pDryRun := fs.Bool("dry-run", false, "Simula execução sem tocar no git nem disparar LLMs")
+	pAutoMerge := fs.Bool("auto-merge", false, "Executa integração automática do vencedor")
+
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "pipeline" {
+		args = args[1:]
+	}
+	_ = fs.Parse(args)
+
+	prompt := strings.Join(fs.Args(), " ")
+	if strings.TrimSpace(prompt) == "" {
+		fmt.Fprintf(os.Stderr, "Erro: tarefa/desafio obrigatório para o pipeline adversarial.\nUso: agy-swarm pipeline [flags] \"tarefa\"\n")
+		os.Exit(1)
+	}
+
+	roles, err := config.ParseRoles(*pRoles, *pCount)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Erro de papéis: %v\n", err)
+		os.Exit(1)
+	}
+
+	hubClient := agyhub.NewClient("")
+	broker := lease.NewBroker(hubClient)
+
+	cfg := pipeline.EngineConfig{
+		RepoRoot:  cwd,
+		Task:      prompt,
+		TestCmd:   *pTestCmd,
+		DryRun:    *pDryRun,
+		AutoMerge: *pAutoMerge,
+		Roles:     roles,
+	}
+
+	engine := pipeline.NewPipelineEngine(cfg, broker, nil)
+
+	fmt.Println("⚡ AGY-SWARM // INICIANDO PIPELINE DE VERIFICAÇÃO ADVERSARIAL")
+	fmt.Printf("• Tarefa: %q\n", prompt)
+	if *pTestCmd != "" {
+		fmt.Printf("• Quality Gate (-test-cmd): %s\n", *pTestCmd)
+	}
+	fmt.Println(strings.Repeat("─", 68))
+
+	results, err := engine.Execute(context.Background())
+	for _, res := range results {
+		statusStr := "✅ CONCLUÍDO"
+		if !res.Success {
+			statusStr = "❌ FALHOU"
+		}
+		fmt.Printf("\n[%s] %s (%v)\n", res.Stage, statusStr, res.Duration.Round(time.Millisecond))
+		if res.ArtifactMsg != "" {
+			fmt.Printf("  • %s\n", res.ArtifactMsg)
+		}
+		if res.Winner != nil {
+			fmt.Printf("  🏆 Vencedor: %s (%s) | Linhas: +%d/-%d\n", res.Winner.Role.Name, res.Winner.AccountID, res.Winner.LinesAdded, res.Winner.LinesDeleted)
+		}
+		if res.Error != nil {
+			fmt.Printf("  ⚠️ Erro: %v\n", res.Error)
+		}
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\n❌ Pipeline falhou: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("\n✨ Pipeline de Verificação Adversarial concluído com sucesso!")
+}
+

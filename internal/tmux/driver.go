@@ -90,79 +90,79 @@ func (d *Driver) BuildLayout(roles []config.RoleConfig) error {
 		return nil
 	}
 
-	// 2. Se tiver 2 ou mais papéis: divide a tela em 50% esquerda e 50% direita
-	out, err = exec.Command("tmux", "split-window", "-h", "-t", pane0, "-c", d.Workdir, "-P", "-F", "#{pane_id}").Output()
-	if err != nil {
-		return fmt.Errorf("falha ao dividir painel principal: %w", err)
-	}
-	rightTop := strings.TrimSpace(string(out))
-	d.Panes[roles[1].Type] = &PaneInfo{
-		ID:       rightTop,
-		Role:     roles[1],
-		State:    "Inicializando",
-		Worktree: "",
-	}
+	// Para enxames modernos, adota o Layout de 3 Zonas (Maestro + Telemetria + Viewport Dinâmico)
+	return d.Build3ZoneLayout(roles)
+}
 
-	// Ajusta proporção 50/50 na horizontal
+// Build3ZoneLayout implementa o layout moderno de 3 zonas:
+// - Esquerda (50% largura): Maestro interativo
+// - Top-Right (50% largura, 35% altura): Telemetria viva (dashboard --watch)
+// - Bottom-Right (50% largura, 65% altura): Viewport dinâmico dos workers efêmeros
+func (d *Driver) Build3ZoneLayout(roles []config.RoleConfig) error {
+	pane0 := d.Panes[roles[0].Type].ID
+
+	// 1. Divide a tela na vertical ao meio (50% esquerda, 50% direita)
+	out, err := exec.Command("tmux", "split-window", "-h", "-t", pane0, "-c", d.Workdir, "-P", "-F", "#{pane_id}").Output()
+	if err != nil {
+		return fmt.Errorf("falha ao dividir coluna direita: %w", err)
+	}
+	topRight := strings.TrimSpace(string(out))
+
+	// 2. Divide a coluna direita: Top-Right (35%) e Bottom-Right (65%)
+	out, err = exec.Command("tmux", "split-window", "-v", "-t", topRight, "-c", d.Workdir, "-p", "65", "-P", "-F", "#{pane_id}").Output()
+	if err != nil {
+		return fmt.Errorf("falha ao dividir viewport dinâmico inferior direito: %w", err)
+	}
+	bottomRight := strings.TrimSpace(string(out))
+
+	// Ajusta proporção 50/50 horizontal na sessão
 	_ = exec.Command("tmux", "select-layout", "-t", d.SessionName, "even-horizontal").Run()
 
-	// 3. Organiza os demais especialistas na coluna direita
-	switch len(roles) {
-	case 2:
-		// Apenas Maestro e Especialista 1 (50/50 horizontal)
-	case 3:
-		// Divide o lado direito verticalmente (top e bottom)
-		out, err = exec.Command("tmux", "split-window", "-v", "-t", rightTop, "-c", d.Workdir, "-P", "-F", "#{pane_id}").Output()
-		if err == nil {
-			d.Panes[roles[2].Type] = &PaneInfo{
-				ID:       strings.TrimSpace(string(out)),
-				Role:     roles[2],
-				State:    "Inicializando",
-				Worktree: "",
-			}
-		}
-	case 4:
-		// Divide o lado direito em 3 linhas
-		p2, _ := exec.Command("tmux", "split-window", "-v", "-t", rightTop, "-c", d.Workdir, "-P", "-F", "#{pane_id}").Output()
-		p3, _ := exec.Command("tmux", "split-window", "-v", "-t", strings.TrimSpace(string(p2)), "-c", d.Workdir, "-P", "-F", "#{pane_id}").Output()
-		d.Panes[roles[2].Type] = &PaneInfo{ID: strings.TrimSpace(string(p2)), Role: roles[2], State: "Inicializando"}
-		d.Panes[roles[3].Type] = &PaneInfo{ID: strings.TrimSpace(string(p3)), Role: roles[3], State: "Inicializando"}
-	case 5:
-		// Grade 2x2 perfeita no lado direito:
-		// Passo A: divide rightTop verticalmente -> cria rightBottom
-		rbOut, err := exec.Command("tmux", "split-window", "-v", "-t", rightTop, "-c", d.Workdir, "-P", "-F", "#{pane_id}").Output()
-		if err != nil {
-			return fmt.Errorf("falha ao criar grid vertical direito: %w", err)
-		}
-		rightBottom := strings.TrimSpace(string(rbOut))
+	// Configura Top-Right como Painel de Telemetria Viva
+	telemetryRole := config.RoleConfig{
+		Type:    "telemetry",
+		Name:    "Telemetria-Viva",
+		Icon:    "📊",
+		Profile: "cluster",
+	}
+	d.Panes[telemetryRole.Type] = &PaneInfo{
+		ID:       topRight,
+		Role:     telemetryRole,
+		State:    "Telemetria",
+		Worktree: d.Workdir,
+	}
+	_ = exec.Command("tmux", "select-pane", "-t", topRight, "-T", "[📊 TELEMETRIA DO CLUSTER · agy-hub]").Run()
 
-		// Passo B: divide rightTop horizontalmente -> cria top-right
-		trOut, err := exec.Command("tmux", "split-window", "-h", "-t", rightTop, "-c", d.Workdir, "-P", "-F", "#{pane_id}").Output()
-		if err != nil {
-			return fmt.Errorf("falha ao criar split superior direito: %w", err)
-		}
+	// Configura Bottom-Right como Viewport Dinâmico
+	viewportRole := config.RoleConfig{
+		Type:    "viewport",
+		Name:    "Worker-Viewport",
+		Icon:    "⚡",
+		Profile: "pool",
+	}
+	d.Panes[viewportRole.Type] = &PaneInfo{
+		ID:       bottomRight,
+		Role:     viewportRole,
+		State:    "Aguardando Tarefa",
+		Worktree: d.Workdir,
+	}
+	_ = exec.Command("tmux", "select-pane", "-t", bottomRight, "-T", "[⚡ WORKER ATIVO · Viewport Dinâmico]").Run()
 
-		// Passo C: divide rightBottom horizontalmente -> cria bottom-right
-		brOut, err := exec.Command("tmux", "split-window", "-h", "-t", rightBottom, "-c", d.Workdir, "-P", "-F", "#{pane_id}").Output()
-		if err != nil {
-			return fmt.Errorf("falha ao criar split inferior direito: %w", err)
+	// Mapeia todos os especialistas efêmeros para o BottomRight Viewport
+	// para que qualquer envio de comando ou status seja refletido na tela ativa
+	for i := 1; i < len(roles); i++ {
+		r := roles[i]
+		d.Panes[r.Type] = &PaneInfo{
+			ID:       bottomRight,
+			Role:     r,
+			State:    "Efêmero",
+			Worktree: d.Workdir,
 		}
-
-		// Mapeia os 4 especialistas no quadrante 2x2:
-		// roles[1] = Top-Left (rightTop)
-		// roles[2] = Top-Right (trOut)
-		// roles[3] = Bottom-Left (rightBottom)
-		// roles[4] = Bottom-Right (brOut)
-		d.Panes[roles[2].Type] = &PaneInfo{ID: strings.TrimSpace(string(trOut)), Role: roles[2], State: "Inicializando"}
-		d.Panes[roles[3].Type] = &PaneInfo{ID: rightBottom, Role: roles[3], State: "Inicializando"}
-		d.Panes[roles[4].Type] = &PaneInfo{ID: strings.TrimSpace(string(brOut)), Role: roles[4], State: "Inicializando"}
 	}
 
-	// 4. Garante que o painel 0 ocupe metade da largura da janela
+	// Seleciona o pane 0 (Maestro) como foco padrão para o usuário
 	_ = exec.Command("tmux", "select-pane", "-t", pane0).Run()
 
-	// 5. Proteção de Auto-Destruição: se o terminal (foot via Super+C) for fechado,
-	// destrói a sessão e dispara limpeza de worktrees automaticamente.
 	if !d.Detach {
 		_ = exec.Command("tmux", "set-option", "-t", d.SessionName, "destroy-unattached", "on").Run()
 		_ = exec.Command("tmux", "set-hook", "-t", d.SessionName, "client-detached", "run-shell 'agy-swarm stop'").Run()
@@ -170,6 +170,17 @@ func (d *Driver) BuildLayout(roles []config.RoleConfig) error {
 
 	d.SetupHUD()
 	return nil
+}
+
+// SwitchViewportRole atualiza o título e o papel em exibição no Viewport Dinâmico.
+func (d *Driver) SwitchViewportRole(role config.RoleConfig) {
+	p, ok := d.Panes[role.Type]
+	if !ok || p.ID == "" {
+		return
+	}
+	title := fmt.Sprintf("[%s %s (%s) · Executando Estágio]", role.Icon, role.Name, role.Profile)
+	_ = exec.Command("tmux", "select-pane", "-t", p.ID, "-T", title).Run()
+	_ = exec.Command("tmux", "select-pane", "-t", p.ID, "-P", "fg=green,bold").Run()
 }
 
 // SetupHUD configura os títulos e bordas padrão no Tmux.

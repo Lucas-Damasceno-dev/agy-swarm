@@ -1,61 +1,109 @@
 # ⚡ agy-swarm
 
-Orquestrador terminal em Go para coordenação em enxame de até 10 contas simultâneas do **Antigravity CLI (agy)** em contas Google AI Pro distintas (`default`, `account2`..`account10`), utilizando **Tmux**, mensageria nativa do **ai-memory**, telemetria de cotas do **agy-hub**, barreira de sincronização de debate e isolamento por **Git Worktrees**.
+Orquestrador nativo em Go para enxame de agentes de IA operando sob o paradigma de **Pipeline de Execução Especulativa e Verificação Adversarial**.
+
+Projetado para extrair o máximo *throughput* e inteligência técnica das **10 contas Google AI Pro** (`default`, `account2`..`account10`), orquestrando processos efêmeros (*one-shot*), isolamento estrito via **Git Worktrees**, pool dinâmico de leases com failover automático em HTTP 429, disjuntor **Circuit Breaker & Doom Loop Guard** e telemetria viva via **Tmux**.
 
 ---
 
-## 🏛️ Topologia & Papéis (Até 10 Contas)
+## 🏛️ Filosofia: Pipeline Adversarial vs. "Mesa Redonda Humana"
 
-| Pane | Papel | Perfil AGY | Projeto ai-memory | Foco / Viés Ontológico |
-| :--- | :--- | :--- | :--- | :--- |
-| **0** | **Maestro** | `default` | `swarm-lead` | Interface humana, barreira de sincronização, Quality Gate e Merge Master. |
-| **1** | **Arquiteto** | `account2` | `swarm-arch` | Padrões de projeto, modularidade, desacoplamento e interfaces limpas. |
-| **2** | **Segurança/SRE**| `account3` | `swarm-sec` | Defesa em profundidade, validações rígidas, edge cases e resiliência. |
-| **3** | **QA / Testes** | `account4` | `swarm-qa` | Testabilidade determinística, cobertura de código e regressão zero. |
-| **4** | **Pragmático** | `account5` | `swarm-hacker`| MVP enxuto, velocidade de entrega, simplicidade e código direto. |
-| *Pool* | **Reviewer** | `account6` | `swarm-reviewer`| Code review semântico, tipagem estrita e convenções idiomáticas. |
-| *Pool* | **Tech Writer** | `account7` | `swarm-doc` | Documentação técnica, especificações de arquitetura e ADRs. |
-| *Pool* | **Performance** | `account8` | `swarm-bench` | Profiling de CPU/RAM, benchmarks e escalabilidade assintótica. |
-| *Pool* | **Refactor** | `account9` | `swarm-refactor`| Limpeza de código morto, unificação de duplicatas e higienização. |
-| *Pool* | **Red Team** | `account10`| `swarm-adversary`| Testes de estresse adversarial, quebra de contratos e fuzzing. |
+Em vez de manter 5 sessões interativas abertas permanentemente trocando opiniões em chat textual, o `agy-swarm` modela o enxame como uma **Máquina de Estados Determinística (DAG)** dividida em 4 estágios matematicamente verificáveis:
+
+```
+                     [ TAREFA DO USUÁRIO ]
+                               │
+                               ▼
+              ┌─────────────────────────────────┐
+              │ ESTÁGIO 1: Especificação (Arch) │ ──► Define Interfaces, Tipos e Contratos
+              └────────────────┬────────────────┘     (Sem implementar a lógica final)
+                               │
+                               ▼
+              ┌─────────────────────────────────┐
+              │ ESTÁGIO 2: Red-Team TDD (QA+Sec)│ ──► Escreve testes (*_test.go) que DEVEM
+              └────────────────┬────────────────┘     falhar agora contra os stubs vazios
+                               │
+            ┌──────────────────┼──────────────────┐
+            ▼                  ▼                  ▼
+     [ Worktree A ]     [ Worktree B ]     [ Worktree C ]
+     Viés: Hacker       Viés: Arquitetura  Viés: Resiliência
+     (Conta Pool #1)    (Conta Pool #2)    (Conta Pool #3)
+            │                  │                  │
+            └──────────────────┼──────────────────┘
+                               ▼
+              ┌─────────────────────────────────┐
+              │ ESTÁGIO 3: Filtro Frio (Go CLI) │ ──► Executa -test-cmd (ex: go test -race)
+              └────────────────┬────────────────┘     Quem não compila/passa é descartado
+                               │
+                               ▼
+              ┌─────────────────────────────────┐
+              │ ESTÁGIO 4: Maestro / Merge Gate │ ──► Audita os git diffs sobreviventes,
+              └─────────────────────────────────┘     seleciona o mais limpo e integra no HEAD
+```
+
+---
+
+## ⚡ As 5 Diferenças Estruturais
+
+1. **Agentes Efêmeros (*One-Shot*) com Isolamento PGID (`killpg`)**:
+   - Fim do envio cego de comandos via `tmux send-keys` para agentes persistentes.
+   - O orquestrador Go dispara processos efêmeros sob demanda (`exec.CommandContext`), isolados em seu próprio Process Group (`Setpgid: true`), com término cirúrgico via `Wait()` e eliminação total de processos zumbis ou vazamento de CPU.
+   - Cada turno começa com contexto limpo, sem acúmulo de lixo na janela de tokens.
+
+2. **Pool Dinâmico de Leases (10 Contas Google AI Pro) com Failover em 429**:
+   - Desacoplamento total entre papéis lógicos e contas físicas.
+   - O `lease.Broker` consulta o daemon `agy-hub` (`/tmp/agy-hub.sock`) e aloca a conta mais saudável (`WeeklyPercent` 70% + `FiveHourPercent` 30%) no momento da execução.
+   - **Failover automático em 429:** Se uma conta atingir limite de taxa ou cota, o Go marca quarentena temporária e relança a mesma etapa em outra conta saudável em ~2 segundos na mesma worktree.
+
+3. **Injeção Direta de Contexto (Zero Tokens Gastos com Mensageria no LLM)**:
+   - O LLM nunca chama o `ai-memory` diretamente via bash ou tool calls.
+   - O binário Go lê o histórico e contratos do `ai-memory`, monta o `prompt-%s.txt` com permissão estrita `0600` contendo todo o contexto mastigado e entrega pronto para o agente focar 100% em código e testes.
+   - Ao encerrar, o Go lê o resultado/diff e publica no `ai-memory` para auditoria contínua.
+
+4. **Circuit Breaker & Doom Loop Guard**:
+   - Inspirado no motor de guardrails do LoopForge: calcula *fingerprints* criptográficos SHA-256 (`diff + testOutput`).
+   - Se 2 tentativas consecutivas produzirem o mesmo erro sem alteração funcional no código, o disjuntor abre imediatamente, interrompendo *doom loops* estéreis e preservando suas cotas.
+
+5. **Layout Tmux Repensado (UX de 3 Zonas)**:
+   - **Painel Esquerdo (50% largura - Foco Humano):** Maestro interativo (`swarm-lead`) onde você comanda e aprova planos.
+   - **Painel Superior Direito (50% largura, 35% altura - Telemetria Viva):** `agy-swarm dashboard --watch` rodando em loop contínuo, exibindo as 10 contas, status de cotas (5h e Semanal), leases ativos e estágio do pipeline.
+   - **Painel Inferior Direito (50% largura, 65% altura - Viewport Dinâmico):** Exibe a execução e logs do worker efêmero ativo naquele momento.
 
 ---
 
 ## 🚀 Comandos
 
 ```bash
-# Iniciar enxame padrão com debate imediato:
-agy-swarm "Refatorar camada de banco de dados para suportar múltiplos drivers"
+# Executar o Pipeline Adversarial de 4 Estágios (Contrato -> TDD -> Best-of-N -> Merge):
+agy-swarm pipeline -test-cmd "go test ./..." "Implementar endpoint de health check"
 
-# Iniciar interativo com os 5 agentes aguardando no Maestro:
-agy-swarm
+# Pipeline com merge automático da solução vencedora aprovada no Quality Gate:
+agy-swarm pipeline -auto-merge -test-cmd "go test -race ./..." "Criar middleware JWT"
 
-# Iniciar com subconjunto de especialistas:
-agy-swarm --roles arch,qa "Especificar contratos de teste da API"
+# Simulação de pipeline sem disparar chamadas ou alterar branches (Dry-Run):
+agy-swarm pipeline -dry-run "Refatorar módulo de autenticação"
 
-# Iniciar em segundo plano permanente (não mata ao fechar o terminal):
-agy-swarm -detach "Refatorar módulos"
+# Iniciar sessão Tmux no Layout de 3 Zonas:
+agy-swarm "Refatorar camada de banco de dados"
 
-# Dashboard interativo com telemetria de cotas do cluster e estado dos agentes:
+# Dashboard interativo com telemetria viva das 10 contas e leases ativos:
 agy-swarm dashboard
+agy-swarm dashboard --watch  # Atualização contínua a cada 2s
 
-# Inspecionar diffs cumulativos de todos os especialistas contra o HEAD:
+# Inspecionar diffs cumulativos dos especialistas contra o HEAD:
 agy-swarm diff
 
-# Iniciar com integração automática de merge caso testes passem:
-agy-swarm -auto-merge "Otimizar consultas lentas"
-
-# Visualizar status de conexões, tmux, cotas e caixas postais:
+# Visualizar status de conexões, cotas e caixas postais:
 agy-swarm status
 
-# Reconectar a uma sessão swarm existente:
+# Reconectar a uma sessão existente:
 agy-swarm attach
 
 # Encerrar sessão e executar teardown seguro de worktrees:
-agy-swarm stop
+agy-swarm stop [--force]
 
-# Limpeza forçada de worktrees residuais:
-agy-swarm clean --force
+# Limpeza de worktrees residuais:
+agy-swarm clean [--force]
 ```
 
 ---
@@ -63,8 +111,8 @@ agy-swarm clean --force
 ## 🛠️ Build & Instalação
 
 ```bash
-make build    # Compila binário em bin/agy-swarm
-make test     # Executa suíte de testes unitários
+make build    # Compila binário otimizado em bin/agy-swarm
+make test     # Executa suíte de testes unitários (62+ testes)
 make install  # Instala binário em ~/.local/bin/agy-swarm
-make clean    # Remove artefatos de compilação
+make clean    # Remove artefatos temporários de compilação
 ```
