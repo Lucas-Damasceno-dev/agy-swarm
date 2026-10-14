@@ -223,22 +223,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	promptFiles := make(map[config.RoleType]string)
-	for _, r := range cfg.Roles {
-		var pText string
-		if cfg.Prompt != "" {
-			if r.Type == config.RoleLead {
-				pText = config.GenerateInitialMaestroPrompt(cfg.Roles, cfg.Prompt)
-			} else {
-				pText = config.GenerateInitialSpecialistPrompt(r, cfg.Prompt)
-			}
-		}
-		tmpFile := filepath.Join(runtimeDir, fmt.Sprintf("prompt-%s.txt", r.Type))
+	maestroRole := cfg.Roles[0]
+	var maestroPrompt string
+	if cfg.Prompt != "" {
+		pText := config.GenerateInitialMaestroPrompt(cfg.Roles, cfg.Prompt)
+		tmpFile := filepath.Join(runtimeDir, fmt.Sprintf("prompt-%s.txt", maestroRole.Type))
 		if err := writeSecureFile(tmpFile, []byte(pText)); err != nil {
-			fmt.Fprintf(os.Stderr, "Erro ao gravar prompt protegido para %s: %v\n", r.Type, err)
+			fmt.Fprintf(os.Stderr, "Erro ao gravar prompt protegido para o Maestro: %v\n", err)
 			os.Exit(1)
 		}
-		promptFiles[r.Type] = tmpFile
+		maestroPrompt = tmpFile
 	}
 
 	fmt.Printf("🖥️ Montando layout Tmux (Sessão: %s)...\n", cfg.SessionName)
@@ -259,11 +253,9 @@ func main() {
 
 	// Inicializa os processos nos painéis do Layout de 3 Zonas
 	// 1. Pane 0 (Maestro): Inicia agy com o perfil do Maestro no repositório principal
-	maestroRole := cfg.Roles[0]
 	maestroPath := wtPaths[maestroRole.Type]
-	maestroPrompt := promptFiles[maestroRole.Type]
 	var maestroCmd string
-	if cfg.Prompt != "" {
+	if maestroPrompt != "" {
 		maestroCmd = fmt.Sprintf("cd %s && PROMPT=\"$(cat %s)\" && rm -f %s && agy-profile %s -i \"$PROMPT\"", maestroPath, maestroPrompt, maestroPrompt, maestroRole.Profile)
 	} else {
 		maestroCmd = fmt.Sprintf("cd %s && agy-profile %s", maestroPath, maestroRole.Profile)

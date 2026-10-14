@@ -58,7 +58,7 @@ func TestPipelineEngineDryRun(t *testing.T) {
 	commitCmd.Dir = tmpDir
 	_ = commitCmd.Run()
 
-	broker := lease.NewBroker(nil)
+	broker := lease.NewBroker(nil, filepath.Join(tmpDir, "leases.json"))
 	runner := &mockRunner{
 		ephemeralResponses: make(map[string]string),
 		commandResponses:   make(map[string]int),
@@ -105,7 +105,7 @@ func TestDispatcherFailoverOn429(t *testing.T) {
 	promptFile := filepath.Join(tmpDir, "prompt.txt")
 	_ = os.WriteFile(promptFile, []byte("test prompt"), 0600)
 
-	broker := lease.NewBroker(nil)
+	broker := lease.NewBroker(nil, filepath.Join(tmpDir, "leases.json"))
 	runner := &mockRunner{
 		failCount429: 1, // 1ª falha dá 429, 2ª passa com nova conta
 	}
