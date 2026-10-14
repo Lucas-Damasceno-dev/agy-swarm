@@ -50,11 +50,15 @@ func (m *Manager) EnsureGitIgnore() error {
 	return nil
 }
 
-// ProvisionRoleWorktree cria o worktree do especialista e injeta as regras de persona.
-func (m *Manager) ProvisionRoleWorktree(role config.RoleConfig) (string, error) {
+// ProvisionRoleWorktreeFromBase cria a worktree ramificada a partir de uma referência base específica.
+func (m *Manager) ProvisionRoleWorktreeFromBase(role config.RoleConfig, baseRef string) (string, error) {
 	if role.Type == config.RoleLead {
 		// Maestro opera no próprio repositório principal
 		return m.RepoRoot, nil
+	}
+
+	if baseRef == "" {
+		baseRef = "HEAD"
 	}
 
 	targetDir := filepath.Join(m.RepoRoot, ".worktrees", fmt.Sprintf("worker-%s", role.Type))
@@ -62,18 +66,19 @@ func (m *Manager) ProvisionRoleWorktree(role config.RoleConfig) (string, error) 
 
 	_ = os.MkdirAll(filepath.Dir(targetDir), 0755)
 
-	// Se o worktree já existir, valida se está saudável
+	// Se a worktree já existir, remove para recriar sincronizada a partir da base
 	if _, err := os.Stat(targetDir); err == nil {
-		return targetDir, nil
+		_ = exec.Command("git", "-C", m.RepoRoot, "worktree", "remove", "--force", targetDir).Run()
+		_ = os.RemoveAll(targetDir)
 	}
 
-	// Cria o worktree com branch dedicado baseado no HEAD atual
+	// Cria o worktree com branch dedicado baseado na base solicitada
 	var stderr bytes.Buffer
-	cmd := exec.Command("git", "worktree", "add", "-B", branchName, targetDir, "HEAD")
+	cmd := exec.Command("git", "worktree", "add", "-B", branchName, targetDir, baseRef)
 	cmd.Dir = m.RepoRoot
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("falha ao criar git worktree para %s: %s (%w)", role.Name, stderr.String(), err)
+		return "", fmt.Errorf("falha ao criar git worktree para %s a partir de %s: %s (%w)", role.Name, baseRef, stderr.String(), err)
 	}
 
 	// Injeta as regras da persona em .gemini/rules/swarm-persona.md
@@ -89,6 +94,11 @@ func (m *Manager) ProvisionRoleWorktree(role config.RoleConfig) (string, error) 
 	}
 
 	return targetDir, nil
+}
+
+// ProvisionRoleWorktree cria o worktree do especialista baseado em HEAD por padrão.
+func (m *Manager) ProvisionRoleWorktree(role config.RoleConfig) (string, error) {
+	return m.ProvisionRoleWorktreeFromBase(role, "HEAD")
 }
 
 // ProvisionAll provisiona worktrees para todos os especialistas configurados.

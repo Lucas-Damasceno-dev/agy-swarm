@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
 )
@@ -131,7 +132,7 @@ func WritePromptFile(workdir, prefix string, content string) (string, error) {
 		return "", fmt.Errorf("falha ao criar pasta de prompts: %w", err)
 	}
 
-	filePath := filepath.Join(baseDir, fmt.Sprintf("%s-%d.txt", prefix, os.Getpid()))
+	filePath := filepath.Join(baseDir, fmt.Sprintf("%s-%d-%d.txt", prefix, os.Getpid(), time.Now().UnixNano()))
 	_ = os.Remove(filePath)
 
 	f, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)

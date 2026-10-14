@@ -57,8 +57,8 @@ func (m *Merger) ExecutePipeline(activeRoles []config.RoleConfig, testCmd string
 		mergeCmd.Dir = m.RepoRoot
 		mergeCmd.Stderr = &stderr
 		if err := mergeCmd.Run(); err != nil {
-			// Aborta o merge em conflito
-			_ = exec.Command("git", "merge", "--abort").Run()
+			// Aborta o merge em conflito garantindo diretório raiz
+			_ = exec.Command("git", "-C", m.RepoRoot, "merge", "--abort").Run()
 
 			// Tentativa de Relay Rebase automático para resolver divergências limpas
 			if rebaseErr := m.RebaseBranch(role, "HEAD"); rebaseErr == nil {
@@ -68,7 +68,7 @@ func (m *Merger) ExecutePipeline(activeRoles []config.RoleConfig, testCmd string
 				retryCmd.Dir = m.RepoRoot
 				retryCmd.Stderr = &retryStderr
 				if retryErr := retryCmd.Run(); retryErr != nil {
-					_ = exec.Command("git", "merge", "--abort").Run()
+					_ = exec.Command("git", "-C", m.RepoRoot, "merge", "--abort").Run()
 					res.Success = false
 					res.Error = fmt.Errorf("conflito de merge persistente no branch %s após rebase: %s", branchName, retryStderr.String())
 					res.Message = "Conflito irresolvível automaticamente; merge abortado"
@@ -92,7 +92,7 @@ func (m *Merger) ExecutePipeline(activeRoles []config.RoleConfig, testCmd string
 			tCmd.Stderr = &testStderr
 			if err := tCmd.Run(); err != nil {
 				// Falha nos testes: reverte o merge
-				_ = exec.Command("git", "reset", "--hard", "HEAD~1").Run()
+				_ = exec.Command("git", "-C", m.RepoRoot, "reset", "--hard", "HEAD~1").Run()
 				res.Success = false
 				res.Error = fmt.Errorf("quality gate falhou para %s: %s", role, testStderr.String())
 				res.Message = "Testes falharam; commit de merge revertido"
@@ -117,7 +117,7 @@ func (m *Merger) RebaseBranch(role config.RoleType, base string) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		_ = exec.Command("git", "rebase", "--abort").Run()
+		_ = exec.Command("git", "-C", m.RepoRoot, "rebase", "--abort").Run()
 		return fmt.Errorf("falha no rebase do branch %s sobre %s: %s", branchName, base, stderr.String())
 	}
 	return nil

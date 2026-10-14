@@ -102,6 +102,11 @@ func (w *Watcher) pollMailboxes() {
 	defer w.mu.Unlock()
 
 	for _, role := range w.Roles {
+		// Proteção estrita contra poluição de tela: nunca injeta texto no viewport (execução de pipeline) ou na telemetria
+		if role.Type == "viewport" || role.Type == "telemetry" {
+			continue
+		}
+
 		msgs, err := w.Client.ListPendingMessages(role.Project)
 		if err != nil {
 			continue

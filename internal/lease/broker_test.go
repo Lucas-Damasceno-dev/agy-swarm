@@ -34,10 +34,11 @@ func TestBrokerAcquireAndRelease(t *testing.T) {
 		},
 	}
 
-	broker := NewBroker(provider)
+	stateFile := t.TempDir() + "/leases.json"
+	broker := NewBroker(provider, stateFile)
 	ctx := context.Background()
 
-	// Deve alocar a conta mais saudável primeiro (account2: 90*0.7 + 85*0.3 = 63 + 25.5 = 88.5)
+	// Deve alocar a conta mais saudável primeiro (account2: maior cota)
 	lease, err := broker.Acquire(ctx, config.RoleHacker, "StageBestOfN")
 	if err != nil {
 		t.Fatalf("falha ao adquirir lease: %v", err)
@@ -86,7 +87,8 @@ func TestBrokerFailover429(t *testing.T) {
 		},
 	}
 
-	broker := NewBroker(provider)
+	stateFile := t.TempDir() + "/leases.json"
+	broker := NewBroker(provider, stateFile)
 	ctx := context.Background()
 
 	lease, err := broker.Acquire(ctx, config.RoleHacker, "StageBestOfN")
@@ -123,5 +125,92 @@ func TestBrokerFailover429(t *testing.T) {
 	}
 	if !foundOld {
 		t.Errorf("account2 não encontrada nos snapshots")
+	}
+}
+
+func TestBrokerPersistenceCrossProcess(t *testing.T) {
+	stateFile := t.TempDir() + "/shared-leases.json"
+	provider := &mockAccountProvider{
+		available: true,
+		state: &agyhub.ClusterState{
+			Profiles: []agyhub.ProfileSummary{
+				{ID: "account2", WeeklyPercent: 90, FiveHourPercent: 80},
+				{ID: "account3", WeeklyPercent: 70, FiveHourPercent: 60},
+			},
+		},
+	}
+
+	// Processo A (ex: Pipeline Engine)
+	brokerA := NewBroker(provider, stateFile)
+	lease, err := brokerA.Acquire(context.Background(), config.RoleHacker, "StageBestOfN")
+	if err != nil {
+		t.Fatalf("falha ao adquirir lease em brokerA: %v", err)
+	}
+
+	// Processo B (ex: Dashboard --watch)
+	brokerB := NewBroker(provider, stateFile)
+	snaps := brokerB.Snapshots()
+
+	var account2Snap *AccountStatusSnapshot
+	for _, s := range snaps {
+		if s.AccountID == "account2" {
+			account2Snap = &s
+			break
+		}
+	}
+
+	if account2Snap == nil {
+		t.Fatalf("account2 não encontrada em snaps de brokerB")
+	}
+	if account2Snap.Status != "BUSY" {
+		t.Errorf("esperava status BUSY em brokerB após aquisição em brokerA, obteve %s", account2Snap.Status)
+	}
+	if account2Snap.CurrentRole != config.RoleHacker {
+		t.Errorf("esperava role RoleHacker em brokerB, obteve %s", account2Snap.CurrentRole)
+	}
+
+	// Libera pelo Processo A
+	brokerA.Release(lease)
+
+	// Processo B deve enxergar liberado
+	snapsAfter := brokerB.Snapshots()
+	for _, s := range snapsAfter {
+		if s.AccountID == "account2" && s.Status != "FREE" {
+			t.Errorf("esperava account2 FREE em brokerB após release em brokerA, obteve %s", s.Status)
+		}
+	}
+}
+
+func TestBrokerSkipCooldownOrErrorStatus(t *testing.T) {
+	stateFile := t.TempDir() + "/leases.json"
+	provider := &mockAccountProvider{
+		available: true,
+		state: &agyhub.ClusterState{
+			Profiles: []agyhub.ProfileSummary{
+				// account2 tem cota alta mas está em COOLDOWN no hub
+				{ID: "account2", WeeklyPercent: 99, FiveHourPercent: 99, Status: "COOLDOWN"},
+				// account3 tem status ACTIVE e cota normal
+				{ID: "account3", WeeklyPercent: 70, FiveHourPercent: 70, Status: "ACTIVE"},
+			},
+		},
+	}
+
+	broker := NewBroker(provider, stateFile)
+	lease, err := broker.Acquire(context.Background(), config.RoleHacker, "StageBestOfN")
+	if err != nil {
+		t.Fatalf("falha ao adquirir lease: %v", err)
+	}
+
+	// Deve pular account2 (COOLDOWN) e escolher account3
+	if lease.AccountID != "account3" {
+		t.Errorf("esperava pular account2 em COOLDOWN e alocar account3, mas obteve %s", lease.AccountID)
+	}
+
+	// Snapshot deve reportar account2 em COOLDOWN
+	snaps := broker.Snapshots()
+	for _, s := range snaps {
+		if s.AccountID == "account2" && s.Status != "COOLDOWN" {
+			t.Errorf("esperava status COOLDOWN para account2 no snapshot, obteve %s", s.Status)
+		}
 	}
 }

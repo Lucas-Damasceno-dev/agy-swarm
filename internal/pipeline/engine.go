@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
@@ -167,11 +168,14 @@ func (e *PipelineEngine) runStageContract(ctx context.Context, role config.RoleC
 		}
 	}
 
+	// Garante que todas as alterações do Arquiteto estejam comitadas no branch swarm/arch
+	autoCommit(wtDir, fmt.Sprintf("feat(spec): contratos e interfaces definidos por %s", role.Name))
+
 	// Extrai o git diff gerado pelo arquiteto
 	diff, _ := e.getGitDiff(wtDir, "HEAD~1", "HEAD")
 	if diff == "" {
-		// Se não comitou ainda, pega o diff staged/untracked
-		diff, _ = e.getGitDiff(wtDir, "", "")
+		// Se for commit único na raiz ou diff direto
+		diff, _ = e.getGitDiff(wtDir, "HEAD", "")
 	}
 
 	res.Success = true
@@ -195,7 +199,9 @@ func (e *PipelineEngine) runStageRedTeam(ctx context.Context, role config.RoleCo
 		return res, "// test suite mock", "FAIL: TestContractCompliance (unimplemented)", nil
 	}
 
-	wtDir, err := e.wtMgr.ProvisionRoleWorktree(role)
+	// Estágio 2 cria worktree ramificada a partir do branch do Estágio 1 (swarm/arch),
+	// garantindo que os contratos já existem fisicamente no disco para o QA compilar
+	wtDir, err := e.wtMgr.ProvisionRoleWorktreeFromBase(role, "swarm/arch")
 	if err != nil {
 		res.Error = err
 		return res, "", "", err
@@ -217,6 +223,9 @@ func (e *PipelineEngine) runStageRedTeam(ctx context.Context, role config.RoleCo
 		res.Error = fmt.Errorf("red-team efêmero falhou (exit: %d): %v", exitCode, err)
 		return res, "", "", res.Error
 	}
+
+	// Garante que todos os arquivos de teste novos/modificados estejam comitados no branch swarm/qa
+	autoCommit(wtDir, fmt.Sprintf("test(red-team): suite de testes gerada por %s", role.Name))
 
 	// Condição A: Compilação dos testes sem execução DEVE passar (exit 0)
 	// Garante que o teste é sintaticamente válido e respeita os stubs do Arch
@@ -241,7 +250,7 @@ func (e *PipelineEngine) runStageRedTeam(ctx context.Context, role config.RoleCo
 
 	diff, _ := e.getGitDiff(wtDir, "HEAD~1", "HEAD")
 	if diff == "" {
-		diff, _ = e.getGitDiff(wtDir, "", "")
+		diff, _ = e.getGitDiff(wtDir, "swarm/arch", "")
 	}
 
 	res.Success = true
@@ -262,12 +271,9 @@ func (e *PipelineEngine) runStageSpeculative(ctx context.Context, contractDiff s
 		workers = []config.RoleConfig{e.findRole(config.RoleHacker)}
 	}
 
-	var survivors []CandidateResult
-
-	for _, w := range workers {
-		wStart := time.Now()
-
-		if e.cfg.DryRun {
+	if e.cfg.DryRun {
+		var survivors []CandidateResult
+		for _, w := range workers {
 			survivors = append(survivors, CandidateResult{
 				Role:        w,
 				AccountID:   "default",
@@ -276,108 +282,134 @@ func (e *PipelineEngine) runStageSpeculative(ctx context.Context, contractDiff s
 				TestPassed:  true,
 				LinesAdded:  15,
 				LinesDeleted: 2,
-				Duration:    time.Since(wStart),
+				Duration:    10 * time.Millisecond,
 			})
-			continue
 		}
+		res.Success = true
+		res.Duration = time.Since(start)
+		res.Candidates = survivors
+		return res, survivors, nil
+	}
 
-		wtDir, err := e.wtMgr.ProvisionRoleWorktree(w)
-		if err != nil {
-			continue
-		}
+	var survivors []CandidateResult
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 
-		promptContent := e.builder.BuildWorkerPrompt(w, contractDiff, testDiff, failingOutput)
-		promptFile, err := WritePromptFile(e.cfg.RepoRoot, fmt.Sprintf("stage3-%s", w.Type), promptContent)
-		if err != nil {
-			continue
-		}
+	// Execução concorrente real de todos os workers competindo em worktrees isoladas
+	for _, w := range workers {
+		wg.Add(1)
+		go func(worker config.RoleConfig) {
+			defer wg.Done()
+			wStart := time.Now()
 
-		allowed, reason := e.breaker.AllowExecution()
-		if !allowed {
+			// Cada worker parte de swarm/qa, contendo os contratos e testes já no disco!
+			wtDir, err := e.wtMgr.ProvisionRoleWorktreeFromBase(worker, "swarm/qa")
+			if err != nil {
+				return
+			}
+
+			promptContent := e.builder.BuildWorkerPrompt(worker, contractDiff, testDiff, failingOutput)
+			promptFile, err := WritePromptFile(e.cfg.RepoRoot, fmt.Sprintf("stage3-%s", worker.Type), promptContent)
+			if err != nil {
+				return
+			}
+
+			// Disjuntor isolado por worker: falha de um especialista não contamina os outros!
+			localBreaker := guardrail.NewCircuitBreaker(guardrail.DefaultConfig())
+
+			allowed, reason := localBreaker.AllowExecution()
+			if !allowed {
+				_ = os.Remove(promptFile)
+				mu.Lock()
+				res.Error = fmt.Errorf("circuito aberto para %s: %s", worker.Name, reason)
+				mu.Unlock()
+				return
+			}
+
+			_, exitCode, leaseAcquired, err := e.dispatcher.DispatchWithFailover(ctx, wtDir, worker, string(StageSpeculative), promptFile, e.cfg.Timeout)
+			accountID := "unknown"
+			if leaseAcquired != nil {
+				accountID = leaseAcquired.AccountID
+				e.broker.Release(leaseAcquired)
+			}
 			_ = os.Remove(promptFile)
-			res.Error = fmt.Errorf("circuito aberto pelo Circuit Breaker: %s", reason)
-			return res, nil, res.Error
-		}
 
-		_, exitCode, leaseAcquired, err := e.dispatcher.DispatchWithFailover(ctx, wtDir, w, string(StageSpeculative), promptFile, e.cfg.Timeout)
-		accountID := "unknown"
-		if leaseAcquired != nil {
-			accountID = leaseAcquired.AccountID
-			e.broker.Release(leaseAcquired)
-		}
-		_ = os.Remove(promptFile)
+			candidate := CandidateResult{
+				Role:        worker,
+				AccountID:   accountID,
+				WorktreeDir: wtDir,
+				Branch:      fmt.Sprintf("swarm/%s", worker.Type),
+				ExitCode:    exitCode,
+				Duration:    time.Since(wStart),
+				Error:       err,
+			}
 
-		candidate := CandidateResult{
-			Role:        w,
-			AccountID:   accountID,
-			WorktreeDir: wtDir,
-			Branch:      fmt.Sprintf("swarm/%s", w.Type),
-			ExitCode:    exitCode,
-			Duration:    time.Since(wStart),
-			Error:       err,
-		}
+			// Blindagem contra Reward Hacking: Restaura a imutabilidade dos testes do Estágio 2
+			_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "*_test.go").Run()
+			_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "**/*_test.go").Run()
 
-		// Blindagem contra Reward Hacking: Restaura a imutabilidade dos testes do Estágio 2
-		_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "*_test.go").Run()
-		_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "**/*_test.go").Run()
-
-		// Filtro Frio: Executa o test-cmd na worktree do candidato
-		if e.cfg.TestCmd != "" {
-			testOut, tExit, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, e.cfg.TestCmd, 2*time.Minute)
-			candidate.TestOutput = testOut
-			candidate.TestPassed = (tExit == 0)
-
-			diff, _ := e.getGitDiff(wtDir, "HEAD~1", "HEAD")
-			candidate.Diff = diff
-			candidate.LinesAdded, candidate.LinesDeleted = countDiffLines(diff)
-
-			// Loop de Auto-Cura (Self-Healing) com disjuntor anti-loop se os testes falharem
-			maxSelfHeal := 2
-			for healAttempt := 1; !candidate.TestPassed && healAttempt <= maxSelfHeal; healAttempt++ {
-				opened, loopReason := e.breaker.RecordFailure(diff, testOut)
-				if opened {
-					res.Error = fmt.Errorf("disjuntor abriu durante o Estágio 3 (%s): %s", w.Name, loopReason)
-					break
-				}
-
-				healPrompt := e.builder.BuildSelfHealingPrompt(w, testOut, healAttempt)
-				healFile, pErr := WritePromptFile(e.cfg.RepoRoot, fmt.Sprintf("heal-%s-%d", w.Type, healAttempt), healPrompt)
-				if pErr != nil {
-					break
-				}
-
-				_, _, healLease, _ := e.dispatcher.DispatchWithFailover(ctx, wtDir, w, "StageSelfHealing", healFile, e.cfg.Timeout)
-				if healLease != nil {
-					e.broker.Release(healLease)
-				}
-				_ = os.Remove(healFile)
-
-				// Restaura testes para garantir imutabilidade pós-reparo
-				_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "*_test.go").Run()
-				_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "**/*_test.go").Run()
-
-				// Reavalia Filtro Frio
-				testOut, tExit, _ = e.dispatcher.Runner.RunCommand(ctx, wtDir, e.cfg.TestCmd, 2*time.Minute)
+			// Filtro Frio: Executa o test-cmd na worktree do candidato
+			if e.cfg.TestCmd != "" {
+				testOut, tExit, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, e.cfg.TestCmd, 2*time.Minute)
 				candidate.TestOutput = testOut
 				candidate.TestPassed = (tExit == 0)
-				diff, _ = e.getGitDiff(wtDir, "HEAD~1", "HEAD")
+
+				diff, _ := e.getGitDiff(wtDir, "swarm/qa", "")
 				candidate.Diff = diff
 				candidate.LinesAdded, candidate.LinesDeleted = countDiffLines(diff)
+
+				// Loop de Auto-Cura (Self-Healing) isolado com disjuntor local
+				maxSelfHeal := 2
+				for healAttempt := 1; !candidate.TestPassed && healAttempt <= maxSelfHeal; healAttempt++ {
+					opened, _ := localBreaker.RecordFailure(diff, testOut)
+					if opened {
+						break
+					}
+
+					healPrompt := e.builder.BuildSelfHealingPrompt(worker, testOut, healAttempt)
+					healFile, pErr := WritePromptFile(e.cfg.RepoRoot, fmt.Sprintf("heal-%s-%d", worker.Type, healAttempt), healPrompt)
+					if pErr != nil {
+						break
+					}
+
+					_, _, healLease, _ := e.dispatcher.DispatchWithFailover(ctx, wtDir, worker, "StageSelfHealing", healFile, e.cfg.Timeout)
+					if healLease != nil {
+						e.broker.Release(healLease)
+					}
+					_ = os.Remove(healFile)
+
+					// Restaura testes para garantir imutabilidade pós-reparo
+					_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "*_test.go").Run()
+					_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "**/*_test.go").Run()
+
+					// Reavalia Filtro Frio
+					testOut, tExit, _ = e.dispatcher.Runner.RunCommand(ctx, wtDir, e.cfg.TestCmd, 2*time.Minute)
+					candidate.TestOutput = testOut
+					candidate.TestPassed = (tExit == 0)
+					diff, _ = e.getGitDiff(wtDir, "swarm/qa", "")
+					candidate.Diff = diff
+					candidate.LinesAdded, candidate.LinesDeleted = countDiffLines(diff)
+				}
+			} else {
+				candidate.TestPassed = (exitCode == 0)
 			}
 
-			if !candidate.TestPassed {
-				res.Candidates = append(res.Candidates, candidate)
-				continue
+			// Se passou no teste, comita a solução do worker na worktree
+			if candidate.TestPassed {
+				autoCommit(wtDir, fmt.Sprintf("feat(impl): solucao implementada por %s", worker.Name))
+				localBreaker.RecordSuccess()
+				mu.Lock()
+				survivors = append(survivors, candidate)
+				mu.Unlock()
 			}
-		} else {
-			candidate.TestPassed = (exitCode == 0)
-		}
 
-		// Se passou no teste, reseta falhas no Circuit Breaker
-		e.breaker.RecordSuccess()
-		survivors = append(survivors, candidate)
-		res.Candidates = append(res.Candidates, candidate)
+			mu.Lock()
+			res.Candidates = append(res.Candidates, candidate)
+			mu.Unlock()
+		}(w)
 	}
+
+	wg.Wait()
 
 	res.Success = (len(survivors) > 0)
 	res.Duration = time.Since(start)
@@ -415,11 +447,10 @@ func (e *PipelineEngine) runStageAuditMerge(ctx context.Context, survivors []Can
 
 	// Executa o merge se AutoMerge estiver ativo ou em modo interativo
 	if e.cfg.AutoMerge && !e.cfg.DryRun {
-		mergeCmd := exec.CommandContext(ctx, "git", "merge", "--no-ff", best.Branch, "-m", fmt.Sprintf("swarm(pipeline): integrando solucao vencedora de %s (%s)", best.Role.Name, best.AccountID))
-		mergeCmd.Dir = e.cfg.RepoRoot
+		mergeCmd := exec.CommandContext(ctx, "git", "-C", e.cfg.RepoRoot, "merge", "--no-ff", best.Branch, "-m", fmt.Sprintf("swarm(pipeline): integrando solucao vencedora de %s (%s)", best.Role.Name, best.AccountID))
 		if err := mergeCmd.Run(); err != nil {
-			// Tenta rebase limpo se houver divergência
-			_ = exec.Command("git", "merge", "--abort").Run()
+			// Tenta abortar o merge garantindo diretório raiz
+			_ = exec.Command("git", "-C", e.cfg.RepoRoot, "merge", "--abort").Run()
 			res.Error = fmt.Errorf("falha ao integrar branch vencedor %s: %w", best.Branch, err)
 			return res, res.Error
 		}
@@ -460,21 +491,54 @@ func (e *PipelineEngine) findRole(rt config.RoleType) config.RoleConfig {
 
 func (e *PipelineEngine) getWorkerRoles() []config.RoleConfig {
 	var workers []config.RoleConfig
+	seen := make(map[config.RoleType]bool)
+
 	for _, r := range e.cfg.Roles {
-		if r.Type != config.RoleLead && r.Type != config.RoleArch && r.Type != config.RoleQA && r.Type != config.RoleSec {
+		if r.Type != config.RoleLead && r.Type != config.RoleArch && r.Type != config.RoleQA {
 			workers = append(workers, r)
+			seen[r.Type] = true
 		}
 	}
+
+	// Garante pelo menos 3 concorrentes para competição real Best-of-N
+	if len(workers) < 3 {
+		candidates := []config.RoleType{config.RoleHacker, config.RoleRefactor, config.RoleBench, config.RoleSec}
+		all := config.AllRoles()
+		for _, c := range candidates {
+			if len(workers) >= 3 {
+				break
+			}
+			if !seen[c] {
+				for _, r := range all {
+					if r.Type == c {
+						workers = append(workers, r)
+						seen[c] = true
+						break
+					}
+				}
+			}
+		}
+	}
+
 	return workers
 }
 
+// autoCommit comita alterações não salvas ou arquivos untracked garantindo rastreabilidade entre estágios.
+func autoCommit(dir, message string) {
+	statusCmd := exec.Command("git", "-C", dir, "status", "--porcelain")
+	out, err := statusCmd.Output()
+	if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+		_ = exec.Command("git", "-C", dir, "add", "-A").Run()
+		_ = exec.Command("git", "-C", dir, "commit", "-m", message).Run()
+	}
+}
+
 func (e *PipelineEngine) getGitDiff(dir, from, to string) (string, error) {
-	args := []string{"diff"}
+	args := []string{"-C", dir, "diff"}
 	if from != "" && to != "" {
 		args = append(args, fmt.Sprintf("%s...%s", from, to))
 	}
 	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
 	out, err := cmd.Output()
 	return string(out), err
 }

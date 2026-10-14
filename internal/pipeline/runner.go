@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -35,7 +36,12 @@ func (r *OSProcessRunner) RunEphemeral(ctx context.Context, workdir string, acco
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, "agy-profile", accountID, "-i", fmt.Sprintf("$(cat %s)", promptFile))
+	promptBytes, err := os.ReadFile(promptFile)
+	if err != nil {
+		return "", -1, fmt.Errorf("falha ao ler ficheiro de prompt (%s): %w", promptFile, err)
+	}
+
+	cmd := exec.CommandContext(execCtx, "agy-profile", accountID, "-i", string(promptBytes))
 	cmd.Dir = workdir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 

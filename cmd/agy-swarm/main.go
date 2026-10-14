@@ -291,11 +291,26 @@ func main() {
 	})
 	_ = driver.SendKeys("telemetry", "agy-swarm dashboard --watch")
 
-	// 3. Pane Bottom-Right (Viewport Dinâmico): Mensagem inicial
+	// 3. Pane Bottom-Right (Viewport Dinâmico): Se houver prompt, executa o pipeline diretamente
 	PollUntil(1*time.Second, 10*time.Millisecond, func() bool {
 		return driver.PaneExists("viewport")
 	})
-	_ = driver.SendKeys("viewport", "echo '⚡ Viewport Dinâmico: aguardando despacho de workers efêmeros...'")
+	if cfg.Prompt != "" {
+		testCmdFlag := ""
+		if *flagTestCmd != "" {
+			testCmdFlag = fmt.Sprintf(" -test-cmd %q", *flagTestCmd)
+		} else {
+			testCmdFlag = " -test-cmd \"go test ./...\""
+		}
+		autoMergeFlag := ""
+		if *flagAutoMerge {
+			autoMergeFlag = " -auto-merge"
+		}
+		viewportCmd := fmt.Sprintf("agy-swarm pipeline%s%s %q", testCmdFlag, autoMergeFlag, cfg.Prompt)
+		_ = driver.SendKeys("viewport", viewportCmd)
+	} else {
+		_ = driver.SendKeys("viewport", "echo '⚡ Viewport Dinâmico: aguardando despacho de workers efêmeros...'")
+	}
 
 	// Descarta potenciais modais de boas-vindas com Escape no Maestro
 	go func() {
