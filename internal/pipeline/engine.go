@@ -142,6 +142,9 @@ func (e *PipelineEngine) runStageContract(ctx context.Context, role config.RoleC
 		return res, "", err
 	}
 
+	baseSHAOut, _ := exec.Command("git", "-C", wtDir, "rev-parse", "HEAD").Output()
+	baseSHA := strings.TrimSpace(string(baseSHAOut))
+
 	promptContent := e.builder.BuildContractPrompt(role, "")
 	promptFile, err := WritePromptFile(e.cfg.RepoRoot, "stage1-contract", promptContent)
 	if err != nil {
@@ -171,11 +174,10 @@ func (e *PipelineEngine) runStageContract(ctx context.Context, role config.RoleC
 	// Garante que todas as alterações do Arquiteto estejam comitadas no branch swarm/arch
 	autoCommit(wtDir, fmt.Sprintf("feat(spec): contratos e interfaces definidos por %s", role.Name))
 
-	// Extrai o git diff gerado pelo arquiteto
-	diff, _ := e.getGitDiff(wtDir, "HEAD~1", "HEAD")
-	if diff == "" {
-		// Se for commit único na raiz ou diff direto
-		diff, _ = e.getGitDiff(wtDir, "HEAD", "")
+	// Extrai o git diff gerado pelo arquiteto contra o commit base inicial
+	diff, _ := e.getGitDiff(wtDir, baseSHA, "HEAD")
+	if diff == "" && baseSHA != "" {
+		diff, _ = e.getGitDiff(wtDir, baseSHA, "")
 	}
 
 	res.Success = true
@@ -248,7 +250,7 @@ func (e *PipelineEngine) runStageRedTeam(ctx context.Context, role config.RoleCo
 		}
 	}
 
-	diff, _ := e.getGitDiff(wtDir, "HEAD~1", "HEAD")
+	diff, _ := e.getGitDiff(wtDir, "swarm/arch", "HEAD")
 	if diff == "" {
 		diff, _ = e.getGitDiff(wtDir, "swarm/arch", "")
 	}
@@ -537,6 +539,8 @@ func (e *PipelineEngine) getGitDiff(dir, from, to string) (string, error) {
 	args := []string{"-C", dir, "diff"}
 	if from != "" && to != "" {
 		args = append(args, fmt.Sprintf("%s...%s", from, to))
+	} else if from != "" {
+		args = append(args, from)
 	}
 	cmd := exec.Command("git", args...)
 	out, err := cmd.Output()

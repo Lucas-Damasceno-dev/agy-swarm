@@ -150,3 +150,41 @@ func TestPromptBuilderSanitization(t *testing.T) {
 		t.Errorf("prompt curto demais: %d", len(prompt))
 	}
 }
+
+func TestGetGitDiffWithFromOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	_ = exec.Command("git", "init", tmpDir).Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.name", "Test").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+
+	testFile := filepath.Join(tmpDir, "test.txt")
+	_ = os.WriteFile(testFile, []byte("linha 1\n"), 0644)
+	_ = exec.Command("git", "-C", tmpDir, "add", "-A").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "commit 1").Run()
+
+	// Cria branch de base
+	_ = exec.Command("git", "-C", tmpDir, "branch", "swarm/qa").Run()
+
+	// Adiciona modificação e comita em HEAD
+	_ = os.WriteFile(testFile, []byte("linha 1\nlinha 2 modificada\n"), 0644)
+	_ = exec.Command("git", "-C", tmpDir, "add", "-A").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "commit 2").Run()
+
+	engine := &PipelineEngine{}
+
+	// Chamada com to == "" DEVE comparar contra swarm/qa e não ignorar o from!
+	diff, err := engine.getGitDiff(tmpDir, "swarm/qa", "")
+	if err != nil {
+		t.Fatalf("getGitDiff falhou: %v", err)
+	}
+
+	if diff == "" {
+		t.Fatalf("getGitDiff retornou diff vazio quando deveria conter alteracao contra swarm/qa")
+	}
+
+	added, deleted := countDiffLines(diff)
+	if added == 0 {
+		t.Errorf("esperava added > 0 no diff, obteve added=%d deleted=%d", added, deleted)
+	}
+}

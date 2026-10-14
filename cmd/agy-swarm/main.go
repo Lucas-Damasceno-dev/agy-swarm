@@ -209,17 +209,10 @@ func main() {
 		fmt.Printf("Aviso: falha ao registrar projetos no ai-memory: %v\n", err)
 	}
 
-	// Se houver prompt, pré-alimenta as caixas dos especialistas e gera os arquivos de boot
+	// Se houver prompt, registra o debate no ai-memory
 	if cfg.Prompt != "" {
 		if err := memClient.WriteWikiPage("swarm-lead", "debates/current.md", fmt.Sprintf("# Debate: %s\n\nData: %s\n", cfg.Prompt, time.Now().Format(time.RFC3339))); err != nil {
 			fmt.Fprintf(os.Stderr, "Aviso: falha ao registrar debate no ai-memory: %v\n", err)
-		}
-		for _, r := range cfg.Roles {
-			if r.Type != config.RoleLead {
-				if err := memClient.SendMessage("swarm-lead", r.Project, fmt.Sprintf("Pauta de Debate do Enxame:\n\"%s\"\nPor favor, envie sua análise técnica defendendo a área de %s.", cfg.Prompt, r.Name)); err != nil {
-					fmt.Fprintf(os.Stderr, "Aviso: falha ao enviar pauta para %s: %v\n", r.Project, err)
-				}
-			}
 		}
 	}
 
@@ -376,14 +369,6 @@ func handleDaemon() {
 	cwd, _ := os.Getwd()
 
 	var driver multiplexer.Multiplexer = tmux.NewDriver(session, cwd)
-	roles := config.DefaultRoles()
-	memClient := memory.NewClient()
-	watcher := memory.NewWatcher(memClient, driver, roles)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	watcher.Start(ctx)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -453,7 +438,7 @@ func handleStop() {
 		}
 	}
 
-	wtMgr := worktree.NewManager(cwd, config.DefaultRoles())
+	wtMgr := worktree.NewManager(cwd, config.AllRoles())
 	if err := wtMgr.SafeCleanup(force); err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️ %v\n", err)
 	} else {
@@ -485,7 +470,7 @@ func handleClean() {
 		}
 	}
 
-	wtMgr := worktree.NewManager(cwd, config.DefaultRoles())
+	wtMgr := worktree.NewManager(cwd, config.AllRoles())
 	if err := wtMgr.SafeCleanup(force); err != nil {
 		fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
 		os.Exit(1)
@@ -517,7 +502,7 @@ func handleStatus() {
 
 	memClient := memory.NewClient()
 	fmt.Println("\n📬 Caixas Postais ai-memory:")
-	for _, r := range config.DefaultRoles() {
+	for _, r := range config.AllRoles() {
 		msgs, err := memClient.ListPendingMessages(r.Project)
 		count := 0
 		if err == nil {
@@ -580,7 +565,10 @@ func handlePipeline() {
 	}
 	fmt.Println(strings.Repeat("─", 68))
 
-	results, err := engine.Execute(context.Background())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	results, err := engine.Execute(ctx)
 	for _, res := range results {
 		statusStr := "✅ CONCLUÍDO"
 		if !res.Success {

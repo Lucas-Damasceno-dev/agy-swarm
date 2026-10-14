@@ -16,7 +16,7 @@ func handleDiff() {
 		os.Exit(1)
 	}
 
-	roles := config.DefaultRoles()
+	roles := config.AllRoles()
 	fmt.Println("⚡ AGY-SWARM // DIFF CUMULATIVO DOS ESPECIALISTAS")
 	fmt.Println("Comparando branches 'swarm/{role}' contra o HEAD atual:")
 	fmt.Println()

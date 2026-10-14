@@ -110,12 +110,19 @@ func renderDashboardOnce() {
 	fmt.Println(strings.Repeat("─", 68))
 
 	memClient := memory.NewClient()
-	for _, r := range config.DefaultRoles() {
+	for _, r := range config.AllRoles() {
 		branchName := "main"
 		diffSummary := "limpo"
 
 		if r.Type != config.RoleLead {
 			branchName = fmt.Sprintf("swarm/%s", r.Type)
+			// Só exibe se o branch existir no repositório
+			checkCmd := exec.Command("git", "rev-parse", "--verify", branchName)
+			checkCmd.Dir = cwd
+			if err := checkCmd.Run(); err != nil {
+				continue
+			}
+
 			cCmd := exec.Command("git", "rev-list", "--count", "HEAD.."+branchName)
 			cCmd.Dir = cwd
 			if out, err := cCmd.Output(); err == nil {

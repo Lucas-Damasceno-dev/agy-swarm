@@ -6,3 +6,5 @@ bin/
 *.pid
 *.log
 *.zip
+*.txt
+.gemini/

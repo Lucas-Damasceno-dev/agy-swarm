@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
 )
@@ -15,6 +16,7 @@ import (
 type Manager struct {
 	RepoRoot string
 	Roles    []config.RoleConfig
+	mu       sync.Mutex
 }
 
 // NewManager cria uma nova instância do gerenciador de worktrees.
@@ -35,17 +37,25 @@ func (m *Manager) EnsureGitRepo() error {
 	return nil
 }
 
-// EnsureGitIgnore garante que a pasta .worktrees esteja presente no .gitignore raiz.
+// EnsureGitIgnore garante que as pastas .worktrees e .gemini estejam presentes no .gitignore raiz.
 func (m *Manager) EnsureGitIgnore() error {
 	gitignorePath := filepath.Join(m.RepoRoot, ".gitignore")
 	content, _ := os.ReadFile(gitignorePath)
-	if !strings.Contains(string(content), ".worktrees/") && !strings.Contains(string(content), ".worktrees\n") {
+	s := string(content)
+	var appendLines []string
+	if !strings.Contains(s, ".worktrees/") && !strings.Contains(s, ".worktrees\n") {
+		appendLines = append(appendLines, ".worktrees/")
+	}
+	if !strings.Contains(s, ".gemini/") && !strings.Contains(s, ".gemini\n") {
+		appendLines = append(appendLines, ".gemini/")
+	}
+	if len(appendLines) > 0 {
 		f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		_, _ = f.WriteString("\n# agy-swarm worker worktrees\n.worktrees/\n")
+		_, _ = f.WriteString("\n# agy-swarm worker worktrees e regras efêmeras\n" + strings.Join(appendLines, "\n") + "\n")
 	}
 	return nil
 }
@@ -56,6 +66,9 @@ func (m *Manager) ProvisionRoleWorktreeFromBase(role config.RoleConfig, baseRef 
 		// Maestro opera no próprio repositório principal
 		return m.RepoRoot, nil
 	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	if baseRef == "" {
 		baseRef = "HEAD"
@@ -91,6 +104,20 @@ func (m *Manager) ProvisionRoleWorktreeFromBase(role config.RoleConfig, baseRef 
 	rulePath := filepath.Join(rulesDir, "swarm-persona.md")
 	if err := os.WriteFile(rulePath, []byte(ruleContent), 0644); err != nil {
 		return "", fmt.Errorf("falha ao escrever regra de persona: %w", err)
+	}
+
+	// Blindagem Git: Garante que .gemini/rules/swarm-persona.md nunca seja rastreado nem commitado
+	excludePathOut, err := exec.Command("git", "-C", targetDir, "rev-parse", "--git-path", "info/exclude").Output()
+	if err == nil {
+		excludeFile := strings.TrimSpace(string(excludePathOut))
+		if !filepath.IsAbs(excludeFile) {
+			excludeFile = filepath.Join(targetDir, excludeFile)
+		}
+		_ = os.MkdirAll(filepath.Dir(excludeFile), 0755)
+		if f, err := os.OpenFile(excludeFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+			_, _ = f.WriteString("\n.gemini/\n.gemini/rules/swarm-persona.md\n")
+			_ = f.Close()
+		}
 	}
 
 	return targetDir, nil

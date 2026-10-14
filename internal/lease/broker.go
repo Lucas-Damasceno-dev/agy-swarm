@@ -353,12 +353,19 @@ func (b *Broker) Failover(ctx context.Context, failedLease *Lease) (*Lease, erro
 	return b.Acquire(ctx, failedLease.Role, failedLease.Stage)
 }
 
-// cleanExpiredCooldownsLocked remove cooldowns cujo tempo já expirou.
+// cleanExpiredCooldownsLocked remove cooldowns expirados e purga leases órfãos (>20 minutos).
 func (b *Broker) cleanExpiredCooldownsLocked() {
 	now := time.Now()
 	for acc, exp := range b.cooldowns {
 		if now.After(exp) {
 			delete(b.cooldowns, acc)
+		}
+	}
+
+	// Purga leases zumbis que ultrapassaram o tempo limite de segurança (20 min)
+	for acc, l := range b.activeLeases {
+		if l != nil && !l.AcquiredAt.IsZero() && now.Sub(l.AcquiredAt) > 20*time.Minute {
+			delete(b.activeLeases, acc)
 		}
 	}
 }

@@ -3,6 +3,7 @@ package lease
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/agyhub"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
@@ -211,6 +212,40 @@ func TestBrokerSkipCooldownOrErrorStatus(t *testing.T) {
 	for _, s := range snaps {
 		if s.AccountID == "account2" && s.Status != "COOLDOWN" {
 			t.Errorf("esperava status COOLDOWN para account2 no snapshot, obteve %s", s.Status)
+		}
+	}
+}
+
+func TestBrokerPurgeZombieLeases(t *testing.T) {
+	stateFile := t.TempDir() + "/leases.json"
+	provider := &mockAccountProvider{
+		available: true,
+		state: &agyhub.ClusterState{
+			Profiles: []agyhub.ProfileSummary{
+				{ID: "account2", WeeklyPercent: 90, FiveHourPercent: 80},
+			},
+		},
+	}
+
+	broker := NewBroker(provider, stateFile)
+	lease, err := broker.Acquire(context.Background(), config.RoleHacker, "StageBestOfN")
+	if err != nil {
+		t.Fatalf("falha ao adquirir lease: %v", err)
+	}
+
+	// Força timestamp de aquisição para 25 minutos atrás
+	broker.mu.Lock()
+	broker.activeLeases[lease.AccountID].AcquiredAt = time.Now().Add(-25 * time.Minute)
+	broker.saveStateLocked()
+	broker.mu.Unlock()
+
+	// Nova instância deve purgar o lease zumbi
+	broker2 := NewBroker(provider, stateFile)
+	snaps := broker2.Snapshots()
+
+	for _, s := range snaps {
+		if s.AccountID == "account2" && s.Status != "FREE" {
+			t.Errorf("esperava account2 liberada após purga de lease zumbi, obteve %s", s.Status)
 		}
 	}
 }
