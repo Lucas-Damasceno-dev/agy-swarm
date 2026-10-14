@@ -1,0 +1,7 @@
+# agy-swarm worker worktrees
+.worktrees/
+
+# Binaries and runtime artifacts
+bin/
+*.pid
+*.log
