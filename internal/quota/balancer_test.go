@@ -8,17 +8,22 @@ import (
 )
 
 func TestCalculateScore(t *testing.T) {
-	// 50% weekly + 100% 5h => (50 * 0.7) + (100 * 0.3) = 35 + 30 = 65
+	// 50% weekly + 100% 5h => 100 * (0.5 + 0.5 * 0.5) = 100 * 0.75 = 75.0
 	s := CalculateScore(50.0, 100.0)
-	if s != 65.0 {
-		t.Errorf("esperado 65.0, obtido: %f", s)
+	if s != 75.0 {
+		t.Errorf("esperado 75.0, obtido: %f", s)
 	}
 
-	// Penalidade quando 5h < 20%
-	// 80% weekly + 10% 5h => (80 * 0.7) + (10 * 0.3) - 50 = 56 + 3 - 50 = 9
-	sPen := CalculateScore(80.0, 10.0)
-	if sPen != 9.0 {
-		t.Errorf("esperado 9.0 com penalidade de 5h, obtido: %f", sPen)
+	// Hard cutoff: 5h crítica de 8% com semanal de 100% deve retornar 0.0 (evita alocar conta à beira de 429)
+	sCutoff := CalculateScore(100.0, 8.0)
+	if sCutoff != 0.0 {
+		t.Errorf("esperado 0.0 com hard cutoff de 5h (<10%%), obtido: %f", sCutoff)
+	}
+
+	// Hard cutoff: semanal crítica de 3% deve retornar 0.0
+	sCutoffWeek := CalculateScore(3.0, 90.0)
+	if sCutoffWeek != 0.0 {
+		t.Errorf("esperado 0.0 com hard cutoff semanal (<5%%), obtido: %f", sCutoffWeek)
 	}
 }
 

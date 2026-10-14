@@ -104,3 +104,31 @@ func TestCircuitBreakerDoomLoopDetection(t *testing.T) {
 		t.Fatalf("execução permitida indevidamente após doom-loop: %s", msg)
 	}
 }
+
+func TestNormalizedFingerprintWithVolatileData(t *testing.T) {
+	out1 := "FAIL: TestAuth (0.014s)\npanic: runtime error at 0xc0000a2040 [2026-10-14T02:00:00Z]"
+	out2 := "FAIL: TestAuth (0.029s)\npanic: runtime error at 0xc0000bf990 [2026-10-14T02:00:05Z]"
+
+	fp1 := ComputeFingerprint("diff --git a/auth.go", out1)
+	fp2 := ComputeFingerprint("diff --git a/auth.go", out2)
+
+	if fp1 != fp2 {
+		t.Fatalf("fingerprints divergiram devido a dados voláteis: %s != %s", fp1, fp2)
+	}
+
+	cfg := CircuitBreakerConfig{
+		MaxConsecutiveFailures: 5,
+		MaxIdenticalLoops:      2,
+		ResetTimeout:           1 * time.Minute,
+	}
+	cb := NewCircuitBreaker(cfg)
+
+	cb.RecordFailure("diff --git a/auth.go", out1)
+	opened, reason := cb.RecordFailure("diff --git a/auth.go", out2)
+	if !opened {
+		t.Fatalf("deveria ter detectado doom loop apesar de tempos e ponteiros diferentes")
+	}
+	if cb.state != StateOpen {
+		t.Errorf("circuito deveria estar aberto: %s", reason)
+	}
+}

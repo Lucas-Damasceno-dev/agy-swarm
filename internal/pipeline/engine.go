@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -157,6 +158,15 @@ func (e *PipelineEngine) runStageContract(ctx context.Context, role config.RoleC
 		return res, "", res.Error
 	}
 
+	// Validação de compilação estrita dos stubs de contrato (Stage 1)
+	if _, statErr := os.Stat(filepath.Join(wtDir, "go.mod")); statErr == nil {
+		buildOut, bCode, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, "go build ./...", 2*time.Minute)
+		if bCode != 0 {
+			res.Error = fmt.Errorf("contrato inválido: stubs do Estágio 1 não compilam:\n%s", buildOut)
+			return res, "", res.Error
+		}
+	}
+
 	// Extrai o git diff gerado pelo arquiteto
 	diff, _ := e.getGitDiff(wtDir, "HEAD~1", "HEAD")
 	if diff == "" {
@@ -208,15 +218,24 @@ func (e *PipelineEngine) runStageRedTeam(ctx context.Context, role config.RoleCo
 		return res, "", "", res.Error
 	}
 
-	// Executa o test-cmd: DEVE FALHAR neste momento
+	// Condição A: Compilação dos testes sem execução DEVE passar (exit 0)
+	// Garante que o teste é sintaticamente válido e respeita os stubs do Arch
+	if _, statErr := os.Stat(filepath.Join(wtDir, "go.mod")); statErr == nil {
+		cOut, cCode, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, "go test -run=^$ ./...", 2*time.Minute)
+		if cCode != 0 {
+			res.Error = fmt.Errorf("testes inválidos: QA escreveu testes que não compilam contra as interfaces do Arch:\n%s", cOut)
+			return res, "", "", res.Error
+		}
+	}
+
+	// Condição B: Execução dos testes DEVE FALHAR neste momento contra os stubs vazios
 	testOutput := ""
 	if e.cfg.TestCmd != "" {
 		out, tCode, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, e.cfg.TestCmd, 2*time.Minute)
 		testOutput = out
 		if tCode == 0 {
-			// Se passou sem código, os testes não estão testando o comportamento esperado!
-			// Não bloqueamos com erro fatal, mas emitimos alerta nos artefatos
-			testOutput = "AVISO: Testes passaram imediatamente (pode indicar ausência de asserções negativas estritas)."
+			res.Error = fmt.Errorf("testes inválidos: testes passaram imediatamente sem nenhuma implementação (tautologia vazia)")
+			return res, "", "", res.Error
 		}
 	}
 
@@ -298,6 +317,10 @@ func (e *PipelineEngine) runStageSpeculative(ctx context.Context, contractDiff s
 			Error:       err,
 		}
 
+		// Blindagem contra Reward Hacking: Restaura a imutabilidade dos testes do Estágio 2
+		_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "*_test.go").Run()
+		_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "**/*_test.go").Run()
+
 		// Filtro Frio: Executa o test-cmd na worktree do candidato
 		if e.cfg.TestCmd != "" {
 			testOut, tExit, _ := e.dispatcher.Runner.RunCommand(ctx, wtDir, e.cfg.TestCmd, 2*time.Minute)
@@ -308,14 +331,41 @@ func (e *PipelineEngine) runStageSpeculative(ctx context.Context, contractDiff s
 			candidate.Diff = diff
 			candidate.LinesAdded, candidate.LinesDeleted = countDiffLines(diff)
 
-			if !candidate.TestPassed {
-				// Registra falha no Circuit Breaker com detecção de Doom Loop
+			// Loop de Auto-Cura (Self-Healing) com disjuntor anti-loop se os testes falharem
+			maxSelfHeal := 2
+			for healAttempt := 1; !candidate.TestPassed && healAttempt <= maxSelfHeal; healAttempt++ {
 				opened, loopReason := e.breaker.RecordFailure(diff, testOut)
 				if opened {
-					res.Error = fmt.Errorf("disjuntor abriu durante o Estágio 3: %s", loopReason)
-					res.Candidates = append(res.Candidates, candidate)
-					return res, nil, res.Error
+					res.Error = fmt.Errorf("disjuntor abriu durante o Estágio 3 (%s): %s", w.Name, loopReason)
+					break
 				}
+
+				healPrompt := e.builder.BuildSelfHealingPrompt(w, testOut, healAttempt)
+				healFile, pErr := WritePromptFile(e.cfg.RepoRoot, fmt.Sprintf("heal-%s-%d", w.Type, healAttempt), healPrompt)
+				if pErr != nil {
+					break
+				}
+
+				_, _, healLease, _ := e.dispatcher.DispatchWithFailover(ctx, wtDir, w, "StageSelfHealing", healFile, e.cfg.Timeout)
+				if healLease != nil {
+					e.broker.Release(healLease)
+				}
+				_ = os.Remove(healFile)
+
+				// Restaura testes para garantir imutabilidade pós-reparo
+				_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "*_test.go").Run()
+				_ = exec.Command("git", "-C", wtDir, "checkout", "swarm/qa", "--", "**/*_test.go").Run()
+
+				// Reavalia Filtro Frio
+				testOut, tExit, _ = e.dispatcher.Runner.RunCommand(ctx, wtDir, e.cfg.TestCmd, 2*time.Minute)
+				candidate.TestOutput = testOut
+				candidate.TestPassed = (tExit == 0)
+				diff, _ = e.getGitDiff(wtDir, "HEAD~1", "HEAD")
+				candidate.Diff = diff
+				candidate.LinesAdded, candidate.LinesDeleted = countDiffLines(diff)
+			}
+
+			if !candidate.TestPassed {
 				res.Candidates = append(res.Candidates, candidate)
 				continue
 			}
@@ -343,15 +393,21 @@ func (e *PipelineEngine) runStageAuditMerge(ctx context.Context, survivors []Can
 		return res, res.Error
 	}
 
-	// Escolhe o melhor candidato: critério de menor ruído (menor total de linhas alteradas com testes verdes)
+	// Critério de desempate determinístico: menor ruído de linhas alteradas com bônus de velocidade
+	calcScore := func(c CandidateResult) float64 {
+		lines := float64(c.LinesAdded + c.LinesDeleted)
+		durSec := c.Duration.Seconds()
+		return lines + (durSec * 0.1) // linhas de diff dominam; duração desempata
+	}
+
 	best := survivors[0]
-	minChanges := best.LinesAdded + best.LinesDeleted
+	bestScore := calcScore(best)
 
 	for i := 1; i < len(survivors); i++ {
-		changes := survivors[i].LinesAdded + survivors[i].LinesDeleted
-		if changes < minChanges && survivors[i].TestPassed {
+		score := calcScore(survivors[i])
+		if score < bestScore && survivors[i].TestPassed {
 			best = survivors[i]
-			minChanges = changes
+			bestScore = score
 		}
 	}
 

@@ -99,6 +99,24 @@ Atenção: Você está competindo contra outras soluções. A mais limpa, corret
 		role.Name, role.Icon, role.Bias, pb.Task, contractDiff, testDiff, failingTestOutput, role.Bias)
 }
 
+// BuildSelfHealingPrompt gera a missão de auto-cura pós-falha no Filtro Frio.
+func (pb *PromptBuilder) BuildSelfHealingPrompt(role config.RoleConfig, failingOutput string, attempt int) string {
+	return fmt.Sprintf(`⚡ AGY-SWARM // ESTÁGIO 3: AUTO-CURA (TENTATIVA %d/2)
+Papel: %s (%s)
+
+## ❌ O FILTRO FRIO DE TESTES REPROVOU SUA IMPLEMENTAÇÃO COM O SEGUINTE ERRO:
+`+"```"+`
+%s
+`+"```"+`
+
+## 📋 SUA MISSÃO CIRÚRGICA DE REPARO:
+1. Analise a falha exata de compilação ou asserção acima.
+2. Corrija o código na sua worktree para fazer os testes passarem sem quebrar contratos.
+3. NÃO altere ou apague os arquivos de teste; o Go restaura a integridade dos testes antes de reavaliar.
+4. Ao concluir, faça 'git commit' com a correção. Execute cirurgicamente e encerre!`,
+		attempt, role.Name, role.Icon, failingOutput)
+}
+
 // WritePromptFile grava o prompt com permissão estrita 0600 em pasta temporária protegida.
 func WritePromptFile(workdir, prefix string, content string) (string, error) {
 	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")

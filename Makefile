@@ -22,3 +22,8 @@ test-race:
 
 clean:
 	rm -rf bin/ .worktrees/
+
+archive: clean
+	@git archive --format=zip --output=agy-swarm-src.zip HEAD
+	@echo "✓ Código-fonte limpo exportado em agy-swarm-src.zip"
+

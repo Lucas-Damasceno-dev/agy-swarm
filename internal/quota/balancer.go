@@ -17,13 +17,15 @@ type AccountScore struct {
 	Score           float64
 }
 
-// CalculateScore aplica a fórmula ponderada de cota semanal (70%) e 5h (30%).
+// CalculateScore aplica a fórmula governada pelo gargalo mais restrito contra 429 (janela de 5h).
+// Aplica Hard Cutoff imediato se a cota residual de 5h estiver crítica (<10%) ou semanal (<5%).
 func CalculateScore(weekly, fiveHour float64) float64 {
-	score := (weekly * 0.7) + (fiveHour * 0.3)
-	// Penalidade crítica se a cota de curto prazo (5h) estiver quase no fim (<20%)
-	if fiveHour < 20.0 {
-		score -= 50.0
+	// Hard Cutoff de segurança contra 429 imediato
+	if fiveHour < 10.0 || weekly < 5.0 {
+		return 0.0
 	}
+	// Fórmula multiplicativa: 5h é o gargalo limitante primário; a cota semanal escala o multiplicador (0.5 a 1.0)
+	score := fiveHour * (0.5 + 0.5*(weekly/100.0))
 	return score
 }
 

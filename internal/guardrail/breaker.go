@@ -4,8 +4,21 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
+)
+
+var (
+	// Remove durações de execução (ex: 0.014s, 15ms, 120µs, 5ns)
+	durationRegex = regexp.MustCompile(`\b\d+(\.\d+)?(ms|s|µs|ns)\b`)
+	// Remove endereços de ponteiros de memória em stack traces (ex: 0xc0000a2040)
+	pointerRegex = regexp.MustCompile(`0x[0-9a-fA-F]+`)
+	// Remove timestamps ISO / RFC3339
+	timestampRegex = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?\b`)
+	// Normaliza múltiplos espaços e quebras de linha repetidas
+	whitespaceRegex = regexp.MustCompile(`[ \t]+`)
 )
 
 // State representa o estado do circuito.
@@ -65,12 +78,25 @@ func NewCircuitBreaker(cfg CircuitBreakerConfig) *CircuitBreaker {
 	}
 }
 
-// ComputeFingerprint gera um hash único da combinação do diff e do output de teste.
+// NormalizeTestOutput remove ruídos voláteis (durações, endereços de memória e timestamps)
+// garantindo que erros funcionais idênticos produzam o mesmo hash criptográfico.
+func NormalizeTestOutput(raw string) string {
+	s := durationRegex.ReplaceAllString(raw, "<dur>")
+	s = pointerRegex.ReplaceAllString(s, "<ptr>")
+	s = timestampRegex.ReplaceAllString(s, "<time>")
+	s = whitespaceRegex.ReplaceAllString(s, " ")
+	return strings.TrimSpace(s)
+}
+
+// ComputeFingerprint gera um hash único da combinação do diff normalizado e do output de teste normalizado.
 func ComputeFingerprint(diff, testOutput string) string {
+	normDiff := strings.TrimSpace(diff)
+	normOut := NormalizeTestOutput(testOutput)
+
 	h := sha256.New()
-	h.Write([]byte(diff))
+	h.Write([]byte(normDiff))
 	h.Write([]byte("|||"))
-	h.Write([]byte(testOutput))
+	h.Write([]byte(normOut))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
