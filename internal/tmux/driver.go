@@ -163,11 +163,6 @@ func (d *Driver) Build3ZoneLayout(roles []config.RoleConfig) error {
 	// Seleciona o pane 0 (Maestro) como foco padrão para o usuário
 	_ = exec.Command("tmux", "select-pane", "-t", pane0).Run()
 
-	if !d.Detach {
-		_ = exec.Command("tmux", "set-option", "-t", d.SessionName, "destroy-unattached", "on").Run()
-		_ = exec.Command("tmux", "set-hook", "-t", d.SessionName, "client-detached", "run-shell 'agy-swarm stop'").Run()
-	}
-
 	d.SetupHUD()
 	return nil
 }

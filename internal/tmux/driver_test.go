@@ -70,3 +70,35 @@ func TestSendControlAllowlist(t *testing.T) {
 		t.Errorf("esperado erro para pane não registrado")
 	}
 }
+
+func TestBuild3ZoneLayoutSessionSurvival(t *testing.T) {
+	sessionName := "test-survival-session"
+	tmpDir := t.TempDir()
+
+	d := NewDriver(sessionName, tmpDir)
+	defer func() {
+		_ = d.KillSession()
+	}()
+
+	roles := config.DefaultRoles()
+	err := d.BuildLayout(roles)
+	if err != nil {
+		t.Fatalf("BuildLayout falhou: %v", err)
+	}
+
+	if !d.SessionExists() {
+		t.Fatalf("sessão Tmux foi destruída prematuramente após BuildLayout")
+	}
+
+	if !d.PaneExists(roles[0].Type) {
+		t.Errorf("pane do Maestro não existe na sessão ativa")
+	}
+
+	if !d.PaneExists("telemetry") {
+		t.Errorf("pane de telemetria não existe na sessão ativa")
+	}
+
+	if !d.PaneExists("viewport") {
+		t.Errorf("pane de viewport não existe na sessão ativa")
+	}
+}
