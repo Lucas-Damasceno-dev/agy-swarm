@@ -1,18 +1,23 @@
 # ⚡ agy-swarm
 
-Orquestrador terminal em Go para coordenação em enxame de até 5 instâncias simultâneas do **Antigravity CLI (agy)** em contas Google AI Pro distintas (`default`, `account2`..`account5`), utilizando **Tmux**, mensageria nativa do **ai-memory**, telemetria de cotas do **agy-hub** e isolamento por **Git Worktrees**.
+Orquestrador terminal em Go para coordenação em enxame de até 10 contas simultâneas do **Antigravity CLI (agy)** em contas Google AI Pro distintas (`default`, `account2`..`account10`), utilizando **Tmux**, mensageria nativa do **ai-memory**, telemetria de cotas do **agy-hub**, barreira de sincronização de debate e isolamento por **Git Worktrees**.
 
 ---
 
-## 🏛️ Topologia & Papéis
+## 🏛️ Topologia & Papéis (Até 10 Contas)
 
 | Pane | Papel | Perfil AGY | Projeto ai-memory | Foco / Viés Ontológico |
 | :--- | :--- | :--- | :--- | :--- |
-| **0** | **Maestro** | `default` | `swarm-lead` | Interface humana, moderação da Mesa Redonda, Quality Gate e Merge Master. |
+| **0** | **Maestro** | `default` | `swarm-lead` | Interface humana, barreira de sincronização, Quality Gate e Merge Master. |
 | **1** | **Arquiteto** | `account2` | `swarm-arch` | Padrões de projeto, modularidade, desacoplamento e interfaces limpas. |
 | **2** | **Segurança/SRE**| `account3` | `swarm-sec` | Defesa em profundidade, validações rígidas, edge cases e resiliência. |
 | **3** | **QA / Testes** | `account4` | `swarm-qa` | Testabilidade determinística, cobertura de código e regressão zero. |
 | **4** | **Pragmático** | `account5` | `swarm-hacker`| MVP enxuto, velocidade de entrega, simplicidade e código direto. |
+| *Pool* | **Reviewer** | `account6` | `swarm-reviewer`| Code review semântico, tipagem estrita e convenções idiomáticas. |
+| *Pool* | **Tech Writer** | `account7` | `swarm-doc` | Documentação técnica, especificações de arquitetura e ADRs. |
+| *Pool* | **Performance** | `account8` | `swarm-bench` | Profiling de CPU/RAM, benchmarks e escalabilidade assintótica. |
+| *Pool* | **Refactor** | `account9` | `swarm-refactor`| Limpeza de código morto, unificação de duplicatas e higienização. |
+| *Pool* | **Red Team** | `account10`| `swarm-adversary`| Testes de estresse adversarial, quebra de contratos e fuzzing. |
 
 ---
 
