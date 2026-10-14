@@ -102,7 +102,7 @@ func (d *Driver) Build3ZoneLayout(roles []config.RoleConfig) error {
 	pane0 := d.Panes[roles[0].Type].ID
 
 	// 1. Divide a tela na vertical ao meio (50% esquerda, 50% direita)
-	out, err := exec.Command("tmux", "split-window", "-h", "-t", pane0, "-c", d.Workdir, "-P", "-F", "#{pane_id}").Output()
+	out, err := exec.Command("tmux", "split-window", "-h", "-t", pane0, "-c", d.Workdir, "-p", "50", "-P", "-F", "#{pane_id}").Output()
 	if err != nil {
 		return fmt.Errorf("falha ao dividir coluna direita: %w", err)
 	}
@@ -114,9 +114,6 @@ func (d *Driver) Build3ZoneLayout(roles []config.RoleConfig) error {
 		return fmt.Errorf("falha ao dividir viewport dinâmico inferior direito: %w", err)
 	}
 	bottomRight := strings.TrimSpace(string(out))
-
-	// Ajusta proporção 50/50 horizontal na sessão
-	_ = exec.Command("tmux", "select-layout", "-t", d.SessionName, "even-horizontal").Run()
 
 	// Configura Top-Right como Painel de Telemetria Viva
 	telemetryRole := config.RoleConfig{
@@ -184,7 +181,14 @@ func (d *Driver) SetupHUD() {
 	_ = exec.Command("tmux", "set-option", "-t", d.SessionName, "pane-border-format", " #{pane_title} ").Run()
 	_ = exec.Command("tmux", "set-option", "-t", d.SessionName, "pane-border-lines", "heavy").Run()
 
-	for _, p := range d.Panes {
+	// Prioriza e fixa os títulos dos 3 painéis canônicos da interface
+	if p, ok := d.Panes[config.RoleLead]; ok {
+		d.UpdatePaneStatus(p.Role.Type, p.State, "blue")
+	}
+	if p, ok := d.Panes["telemetry"]; ok {
+		d.UpdatePaneStatus(p.Role.Type, p.State, "blue")
+	}
+	if p, ok := d.Panes["viewport"]; ok {
 		d.UpdatePaneStatus(p.Role.Type, p.State, "blue")
 	}
 }

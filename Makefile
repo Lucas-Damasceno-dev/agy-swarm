@@ -11,9 +11,9 @@ build:
 
 install: build
 	@mkdir -p $(HOME)/.local/bin
-	cp $(BINARY_NAME) $(HOME)/.local/bin/agy-swarm
+	install -m 755 $(BINARY_NAME) $(HOME)/.local/bin/agy-swarm
 	@if [ -d "/home/lucas/.local/bin" ] && [ "$(HOME)" != "/home/lucas" ]; then \
-		mkdir -p /home/lucas/.local/bin && cp $(BINARY_NAME) /home/lucas/.local/bin/agy-swarm; \
+		mkdir -p /home/lucas/.local/bin && install -m 755 $(BINARY_NAME) /home/lucas/.local/bin/agy-swarm; \
 	fi
 	@echo "✓ Instalado em $(HOME)/.local/bin/agy-swarm"
 
