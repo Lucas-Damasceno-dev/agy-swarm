@@ -2,14 +2,17 @@ package tmux
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
-	"regexp"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/multiplexer"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/security"
 )
 
 var (
@@ -175,11 +178,23 @@ func (d *Driver) SwitchViewportRole(role config.RoleConfig) {
 	_ = exec.Command("tmux", "select-pane", "-t", p.ID, "-P", "fg=green,bold").Run()
 }
 
-// SetupHUD configura os títulos e bordas padrão no Tmux.
+// SetupHUD configura títulos, bordas, mouse e atalhos de navegação flutuante no Tmux.
 func (d *Driver) SetupHUD() {
 	_ = exec.Command("tmux", "set-option", "-t", d.SessionName, "pane-border-status", "top").Run()
 	_ = exec.Command("tmux", "set-option", "-t", d.SessionName, "pane-border-format", " #{pane_title} ").Run()
 	_ = exec.Command("tmux", "set-option", "-t", d.SessionName, "pane-border-lines", "heavy").Run()
+
+	// Habilita suporte nativo ao mouse (clique de painel, redimensionamento de divisão e scroll de logs)
+	_ = exec.Command("tmux", "set-option", "-t", d.SessionName, "mouse", "on").Run()
+
+	// Atalhos flutuantes ergonômicos sem prefixo (Alt / Meta)
+	_ = exec.Command("tmux", "bind-key", "-n", "M-k", "display-popup", "-E", "-w", "85%", "-h", "75%", "agy-swarm kanban status | less -R").Run()
+	_ = exec.Command("tmux", "bind-key", "-n", "M-d", "display-popup", "-E", "-w", "90%", "-h", "85%", "agy-swarm diff | less -R").Run()
+	_ = exec.Command("tmux", "bind-key", "-n", "M-w", "last-window").Run()
+
+	// Legenda padrão de atalhos na barra de status
+	_ = exec.Command("tmux", "set-option", "-t", d.SessionName, "status-right-length", "90").Run()
+	_ = exec.Command("tmux", "set-option", "-t", d.SessionName, "status-right", " Alt+k: Kanban │ Alt+d: Diffs │ Alt+w: Wave Grid │ Mouse: ON ").Run()
 
 	// Prioriza e fixa os títulos dos 3 painéis canônicos da interface
 	if p, ok := d.Panes[config.RoleLead]; ok {
@@ -228,15 +243,14 @@ func (d *Driver) UpdatePaneStatus(role config.RoleType, status string, color str
 	d.UpdatePaneWithQuota(role, status, color, 0, 0)
 }
 
-// UpdateStatusBar atualiza o status-right do Tmux com dados agregados do cluster.
+// UpdateStatusBar atualiza o status-right do Tmux com dados agregados do cluster e atalhos rápidos.
 func (d *Driver) UpdateStatusBar(clusterInfo string) {
-	rightText := fmt.Sprintf(" %s │ agy-swarm ", clusterInfo)
+	rightText := fmt.Sprintf(" %s │ Alt+k: Kanban │ Alt+d: Diffs │ Alt+w: Wave Grid ", clusterInfo)
+	_ = exec.Command("tmux", "set-option", "-t", d.SessionName, "status-right-length", "90").Run()
 	_ = exec.Command("tmux", "set-option", "-t", d.SessionName, "status-right", rightText).Run()
 }
 
 var (
-	ansiRegex = regexp.MustCompile(`\x1b(\[[0-9;]*[a-zA-Z~]|\][^\x07\x1b]*(\x07|\x1b\\)|[PX^_][^\x1b]*\x1b\\|[()][AB012])`)
-
 	// AllowedControlKeys define a allowlist estrita de teclas de controle autorizadas.
 	AllowedControlKeys = map[string]bool{
 		"Enter":  true,
@@ -245,18 +259,9 @@ var (
 	}
 )
 
-// SanitizeInput remove bytes nulos, sequências de escape ANSI e normaliza quebras de linha.
+// SanitizeInput remove bytes nulos, sequências de escape ANSI e normaliza quebras de linha via internal/security.
 func SanitizeInput(s string) string {
-	// Remove bytes nulos
-	s = strings.ReplaceAll(s, "\x00", "")
-	// Remove sequências ANSI conhecidas
-	s = ansiRegex.ReplaceAllString(s, "")
-	// Remove qualquer ESC residual
-	s = strings.ReplaceAll(s, "\x1b", "")
-	// Normaliza quebras de linha carriage-return
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	s = strings.ReplaceAll(s, "\r", "")
-	return s
+	return security.SanitizeInput(s)
 }
 
 // SendLiteral envia texto bruto sanitizado para o PTY de um pane específico com proteção contra flag e key injection.
@@ -266,12 +271,90 @@ func (d *Driver) SendLiteral(role config.RoleType, text string) error {
 		return fmt.Errorf("painel para papel %s não encontrado", role)
 	}
 
+	// Proteção contra colisão no layout de 3 zonas:
+	// Se o painel for compartilhado com o viewport, silencia notificações direcionadas a especialistas
+	if vp, ok := d.Panes["viewport"]; ok && vp.ID != "" && p.ID == vp.ID && role != "viewport" {
+		return nil
+	}
+
 	sanitized := SanitizeInput(text)
 	cmd := exec.Command("tmux", "send-keys", "-t", p.ID, "-l", "--", sanitized)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("erro no send-keys literal para pane %s: %s (%w)", p.ID, stderr.String(), err)
+	}
+	return nil
+}
+
+// SavePanesToRuntime persiste o mapeamento de papéis e IDs de painéis em runtimeDir de forma protegida.
+func (d *Driver) SavePanesToRuntime(runtimeDir string) error {
+	panesMap := make(map[string]string)
+	for rt, p := range d.Panes {
+		if p != nil && p.ID != "" {
+			panesMap[string(rt)] = p.ID
+		}
+	}
+	data, err := json.Marshal(panesMap)
+	if err != nil {
+		return err
+	}
+	targetFile := filepath.Join(runtimeDir, fmt.Sprintf("%s-panes.json", d.SessionName))
+	return security.WriteRestrictedFile(targetFile, data)
+}
+
+// HydratePanesFromRuntime restaura o mapa de painéis a partir de runtimeDir ou inspeciona o Tmux ativo.
+func (d *Driver) HydratePanesFromRuntime(runtimeDir string) error {
+	targetFile := filepath.Join(runtimeDir, fmt.Sprintf("%s-panes.json", d.SessionName))
+	if data, err := os.ReadFile(targetFile); err == nil && len(data) > 0 {
+		var panesMap map[string]string
+		if err := json.Unmarshal(data, &panesMap); err == nil && len(panesMap) > 0 {
+			allRoles := config.AllRoles()
+			for rtStr, paneID := range panesMap {
+				rt := config.RoleType(rtStr)
+				var roleCfg config.RoleConfig
+				found := false
+				for _, r := range allRoles {
+					if r.Type == rt {
+						roleCfg = r
+						found = true
+						break
+					}
+				}
+				if !found {
+					roleCfg = config.RoleConfig{Type: rt, Name: rtStr}
+				}
+				d.Panes[rt] = &PaneInfo{
+					ID:       paneID,
+					Role:     roleCfg,
+					Worktree: d.Workdir,
+				}
+			}
+			return nil
+		}
+	}
+
+	// Fallback dinâmico: consulta o Tmux ativo diretamente
+	out, err := exec.Command("tmux", "list-panes", "-t", d.SessionName, "-F", "#{pane_id}:#{pane_index}").Output()
+	if err != nil {
+		return fmt.Errorf("falha ao consultar panes da sessão %s: %w", d.SessionName, err)
+	}
+
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.Split(strings.TrimSpace(line), ":")
+		if len(parts) >= 2 {
+			pID := parts[0]
+			pIdx := parts[1]
+			// Painel 0 no layout de 3 zonas é o Maestro (RoleLead)
+			if pIdx == "0" {
+				leadRole := config.RoleConfig{Type: config.RoleLead, Name: "Maestro", Project: "swarm-lead"}
+				d.Panes[config.RoleLead] = &PaneInfo{
+					ID:       pID,
+					Role:     leadRole,
+					Worktree: d.Workdir,
+				}
+			}
+		}
 	}
 	return nil
 }

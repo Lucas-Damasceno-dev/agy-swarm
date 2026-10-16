@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -217,3 +218,344 @@ func TestCargoTargetDirInjection(t *testing.T) {
 		t.Errorf("CARGO_TARGET_DIR não foi injetado corretamente: esperado %s, obtido %s", expectedTarget, got)
 	}
 }
+
+func TestRunStageAuditMerge_RobustnessSelection(t *testing.T) {
+	engine := &PipelineEngine{
+		cfg: EngineConfig{
+			DryRun:    true,
+			AutoMerge: false,
+		},
+	}
+
+	// Cenário A: Hacker com 20 linhas limpas e 1 checagem de erro vence monstro de 150 linhas de Sec
+	survivorsMonster := []CandidateResult{
+		{
+			Role: config.RoleConfig{
+				Type: config.RoleHacker,
+				Name: "Hacker",
+			},
+			AccountID:    "acc-hacker",
+			Branch:       "swarm/hacker",
+			Duration:     3 * time.Second,
+			TestPassed:   true,
+			Diff:         "+ if err != nil { return nil, err }\n+ func Clean() {}\n",
+			LinesAdded:   20,
+			LinesDeleted: 0,
+		},
+		{
+			Role: config.RoleConfig{
+				Type: config.RoleSec,
+				Name: "Security Specialist",
+			},
+			AccountID:    "acc-sec",
+			Branch:       "swarm/sec",
+			Duration:     5 * time.Second,
+			TestPassed:   true,
+			Diff:         "+ if err != nil { return nil, err }\n+ // bloated code\n",
+			LinesAdded:   150,
+			LinesDeleted: 10,
+		},
+	}
+
+	resA, err := engine.runStageAuditMerge(context.Background(), survivorsMonster)
+	if err != nil || resA.Winner == nil {
+		t.Fatalf("runStageAuditMerge falhou: %v", err)
+	}
+	if resA.Winner.Role.Type != config.RoleHacker {
+		t.Errorf("esperava que Hacker vencesse contra código inchado de 150 linhas de Sec, mas venceu: %s", resA.Winner.Role.Type)
+	}
+
+	// Cenário B: Sec com código defensivo de 8 linhas vence gambiarra de 3 linhas sem checagem de erro
+	survivorsFair := []CandidateResult{
+		{
+			Role: config.RoleConfig{
+				Type: config.RoleHacker,
+				Name: "Hacker",
+			},
+			AccountID:    "acc-hacker",
+			Branch:       "swarm/hacker",
+			Duration:     3 * time.Second,
+			TestPassed:   true,
+			Diff:         "+ // 3-line quick hack\n+ return nil\n",
+			LinesAdded:   3,
+			LinesDeleted: 0,
+		},
+		{
+			Role: config.RoleConfig{
+				Type: config.RoleSec,
+				Name: "Security Specialist",
+			},
+			AccountID:    "acc-sec",
+			Branch:       "swarm/sec",
+			Duration:     4 * time.Second,
+			TestPassed:   true,
+			Diff:         "+ if err != nil { return nil, err }\n+ if len(data) == 0 { return nil, fmt.Errorf(\"empty\") }\n+ if obj == nil { return nil, errors.New(\"nil\") }\n",
+			LinesAdded:   8,
+			LinesDeleted: 1,
+		},
+	}
+
+	resB, err := engine.runStageAuditMerge(context.Background(), survivorsFair)
+	if err != nil || resB.Winner == nil {
+		t.Fatalf("runStageAuditMerge falhou: %v", err)
+	}
+	if resB.Winner.Role.Type != config.RoleSec {
+		t.Errorf("esperava que RoleSec vencesse a gambiarra de 3 linhas graças às validações defensivas, mas venceu: %s", resB.Winner.Role.Type)
+	}
+}
+
+func TestEnforceTestImmutability(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	_ = exec.Command("git", "-C", tmpDir, "init").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.name", "Test").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.email", "test@example.com").Run()
+
+	baseFile := filepath.Join(tmpDir, "main.go")
+	_ = os.WriteFile(baseFile, []byte("package main\n"), 0644)
+	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "init").Run()
+
+	// Branch swarm/qa com teste legítimo
+	_ = exec.Command("git", "-C", tmpDir, "branch", "swarm/qa").Run()
+	_ = exec.Command("git", "-C", tmpDir, "checkout", "swarm/qa").Run()
+	legitTest := filepath.Join(tmpDir, "main_test.go")
+	_ = os.WriteFile(legitTest, []byte("package main\n// legit test\n"), 0644)
+	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "qa tests").Run()
+
+	// Worker branch
+	_ = exec.Command("git", "-C", tmpDir, "checkout", "-b", "swarm/worker").Run()
+
+	// Worker tenta adulterar: modifica teste legítimo E cria testes untracked (Go e Rust na pasta tests/)
+	_ = os.WriteFile(legitTest, []byte("package main\n// hacked test\n"), 0644)
+	bypassTest := filepath.Join(tmpDir, "bypass_test.go")
+	_ = os.WriteFile(bypassTest, []byte("package main\nfunc TestBypass() {}\n"), 0644)
+
+	rustTestsDir := filepath.Join(tmpDir, "tests")
+	_ = os.MkdirAll(rustTestsDir, 0755)
+	rustBypass := filepath.Join(rustTestsDir, "bypass_integration.rs")
+	_ = os.WriteFile(rustBypass, []byte("#[test]\nfn test_bypass() {}\n"), 0644)
+
+	// Aplica blindagem de imutabilidade
+	enforceTestImmutability(tmpDir, "swarm/qa")
+
+	// 1. bypass_test.go DEVE ter sido removido
+	if _, err := os.Stat(bypassTest); !os.IsNotExist(err) {
+		t.Errorf("bypass_test.go não-rastreado deveria ter sido removido pelo enforceTestImmutability")
+	}
+
+	// 2. tests/bypass_integration.rs DEVE ter sido removido
+	if _, err := os.Stat(rustBypass); !os.IsNotExist(err) {
+		t.Errorf("tests/bypass_integration.rs não-rastreado deveria ter sido removido pelo enforceTestImmutability")
+	}
+
+	// 3. main_test.go DEVE ter sido restaurado para o conteúdo de swarm/qa
+	content, _ := os.ReadFile(legitTest)
+	if string(content) != "package main\n// legit test\n" {
+		t.Errorf("main_test.go não foi restaurado para a versão de swarm/qa; obtido: %s", string(content))
+	}
+}
+
+func TestEnforceTestImmutability_CommittedBypass(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	_ = exec.Command("git", "-C", tmpDir, "init").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.name", "Test").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.email", "test@example.com").Run()
+
+	baseFile := filepath.Join(tmpDir, "main.go")
+	_ = os.WriteFile(baseFile, []byte("package main\n"), 0644)
+	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "init").Run()
+
+	// Branch swarm/qa com teste legítimo
+	_ = exec.Command("git", "-C", tmpDir, "branch", "swarm/qa").Run()
+	_ = exec.Command("git", "-C", tmpDir, "checkout", "swarm/qa").Run()
+	legitTest := filepath.Join(tmpDir, "main_test.go")
+	_ = os.WriteFile(legitTest, []byte("package main\n// legit test\n"), 0644)
+	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "qa tests").Run()
+
+	// Worker branch
+	_ = exec.Command("git", "-C", tmpDir, "checkout", "-b", "swarm/worker").Run()
+
+	// Worker comita novo arquivo de teste (bypass_test.go e tests/fake_test.rs) para tentar burlar
+	bypassTest := filepath.Join(tmpDir, "bypass_test.go")
+	_ = os.WriteFile(bypassTest, []byte("package main\nfunc TestFakeMain() {}\n"), 0644)
+	rustTestsDir := filepath.Join(tmpDir, "tests")
+	_ = os.MkdirAll(rustTestsDir, 0755)
+	rustBypass := filepath.Join(rustTestsDir, "fake_test.rs")
+	_ = os.WriteFile(rustBypass, []byte("#[test]\nfn test_fake() {}\n"), 0644)
+
+	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "worker malicious test commit").Run()
+
+	// Executa enforceTestImmutability
+	enforceTestImmutability(tmpDir, "swarm/qa")
+
+	// 1. bypass_test.go DEVE ter sido removido do disco e do git
+	if _, err := os.Stat(bypassTest); !os.IsNotExist(err) {
+		t.Errorf("bypass_test.go comitado não foi removido pelo enforceTestImmutability")
+	}
+
+	// 2. tests/fake_test.rs DEVE ter sido removido
+	if _, err := os.Stat(rustBypass); !os.IsNotExist(err) {
+		t.Errorf("tests/fake_test.rs comitado não foi removido pelo enforceTestImmutability")
+	}
+
+	// 3. main_test.go DEVE existir e ser legítimo
+	content, _ := os.ReadFile(legitTest)
+	if string(content) != "package main\n// legit test\n" {
+		t.Errorf("main_test.go adulterado ou inexistente: %s", string(content))
+	}
+}
+
+func TestCalcScore_SinglePatternBonusPerLine(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = exec.Command("git", "-C", tmpDir, "init").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "--allow-empty", "-m", "init").Run()
+
+	cfg := EngineConfig{
+		RepoRoot: tmpDir,
+		Roles:    config.DefaultRoles(),
+	}
+	engine := NewPipelineEngine(cfg, nil, nil)
+
+	// Candidato 1: Linha única com "if err != nil { return nil, err }"
+	// Contém múltiplos padrões sobrepostos: "if err != nil", "!= nil", "return nil, err", "return err"
+	// Com break por linha, deve pontuar apenas 0.5 de bônus, não 2.0
+	c1 := CandidateResult{
+		Role:        config.RoleConfig{Type: config.RoleHacker, Name: "Hacker"},
+		Branch:      "swarm/hacker",
+		Duration:    1 * time.Second,
+		TestPassed:  true,
+		Diff:        "+ if err != nil { return nil, err }\n",
+		LinesAdded:  1,
+		LinesDeleted: 0,
+	}
+
+	c2 := CandidateResult{
+		Role:        config.RoleConfig{Type: config.RoleHacker, Name: "Hacker"},
+		Branch:      "swarm/hacker",
+		Duration:    1 * time.Second,
+		TestPassed:  true,
+		Diff:        "+ x := 42\n",
+		LinesAdded:  1,
+		LinesDeleted: 0,
+	}
+
+	res, err := engine.runStageAuditMerge(context.Background(), []CandidateResult{c1, c2})
+	if err != nil || res.Winner == nil {
+		t.Fatalf("runStageAuditMerge falhou: %v", err)
+	}
+
+	if res.Winner.Diff != c1.Diff {
+		t.Errorf("esperava candidato com tratamento de erro como vencedor")
+	}
+}
+
+func TestStageAuditMerge_SafeCleanupDefeatedBranches(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = exec.Command("git", "-C", tmpDir, "init").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.name", "Test").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.email", "test@example.com").Run()
+
+	baseFile := filepath.Join(tmpDir, "main.go")
+	_ = os.WriteFile(baseFile, []byte("package main\n"), 0644)
+	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "init").Run()
+
+	// Cria branches de candidatos
+	_ = exec.Command("git", "-C", tmpDir, "branch", "swarm/hacker").Run()
+	_ = exec.Command("git", "-C", tmpDir, "branch", "swarm/refactor").Run()
+	_ = exec.Command("git", "-C", tmpDir, "branch", "swarm/bench").Run()
+
+	// Cria commit no branch vencedor (hacker)
+	_ = exec.Command("git", "-C", tmpDir, "checkout", "swarm/hacker").Run()
+	_ = os.WriteFile(filepath.Join(tmpDir, "hacker.go"), []byte("package main\n// win\n"), 0644)
+	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "hacker solution").Run()
+
+	// Cria commit no branch perdedor (refactor)
+	_ = exec.Command("git", "-C", tmpDir, "checkout", "swarm/refactor").Run()
+	_ = os.WriteFile(filepath.Join(tmpDir, "refactor.go"), []byte("package main\n// lose\n"), 0644)
+	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "refactor solution").Run()
+
+	// Volta para a branch main
+	_ = exec.Command("git", "-C", tmpDir, "checkout", "main").Run()
+
+	cfg := EngineConfig{
+		RepoRoot:  tmpDir,
+		AutoMerge: true,
+		Roles:     config.DefaultRoles(),
+	}
+	engine := NewPipelineEngine(cfg, nil, nil)
+
+	survivors := []CandidateResult{
+		{
+			Role:        config.RoleConfig{Type: config.RoleHacker, Name: "Hacker"},
+			Branch:      "swarm/hacker",
+			Duration:    1 * time.Second,
+			TestPassed:  true,
+			Diff:        "+ hacker win\n",
+			LinesAdded:  1,
+			LinesDeleted: 0,
+		},
+		{
+			Role:        config.RoleConfig{Type: config.RoleRefactor, Name: "Refactor"},
+			Branch:      "swarm/refactor",
+			Duration:    10 * time.Second,
+			TestPassed:  true,
+			Diff:        "+ refactor lose\n",
+			LinesAdded:  50,
+			LinesDeleted: 0,
+		},
+	}
+
+	res, err := engine.runStageAuditMerge(context.Background(), survivors)
+	if err != nil {
+		t.Fatalf("runStageAuditMerge com AutoMerge falhou: %v", err)
+	}
+	if res.Winner == nil || res.Winner.Role.Type != config.RoleHacker {
+		t.Fatalf("vencedor incorreto: %+v", res.Winner)
+	}
+
+	// Valida que SafeCleanup expurgou branches sob swarm/*
+	branchOut, _ := exec.Command("git", "-C", tmpDir, "for-each-ref", "--format=%(refname:short)", "refs/heads/swarm/").Output()
+	remaining := strings.TrimSpace(string(branchOut))
+	if remaining != "" {
+		t.Errorf("esperava que branches derrotadas fossem expurgadas após automerge, mas restaram:\n%s", remaining)
+	}
+}
+
+func TestIsRefactorOrAlignmentTask(t *testing.T) {
+	// Casos que NÃO devem desativar o TDD (palavras genéricas no corpo da Spec)
+	negativeCases := []string{
+		"[CARD-01] Criar novo endpoint: adicionar validação de tipo para payload",
+		"[CARD-02] Integrar banco de dados: fix no schema e ajuste de índices",
+		"[CARD-03] Feature pipeline: build de artefatos efêmeros",
+	}
+	for _, tc := range negativeCases {
+		if isRefactorOrAlignmentTask(tc) {
+			t.Errorf("esperava false para task %q, obteve true (TDD desativado indevidamente)", tc)
+		}
+	}
+
+	// Casos legítimos de refatoração que PODEM ignorar falha inicial do TDD
+	positiveCases := []string{
+		"[REFACTOR // MED] Extrair helpers de parsing",
+		"[BENCH // HIGH] Otimizar alocações de buffer",
+		"[CARD-05] Refactor database layer: reorganizar conexões",
+		"[CARD-06] Limpeza de dead code: remover structs obsoletas",
+	}
+	for _, tc := range positiveCases {
+		if !isRefactorOrAlignmentTask(tc) {
+			t.Errorf("esperava true para task %q, obteve false", tc)
+		}
+	}
+}
+
+
+

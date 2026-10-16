@@ -2,8 +2,12 @@ package worktree
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
 )
@@ -122,3 +126,49 @@ func (m *Merger) RebaseBranch(role config.RoleType, base string) error {
 	}
 	return nil
 }
+
+// RebaseInWorktree executa o rebase do branch dentro do próprio diretório da worktree onde está ativo,
+// contornando a restrição do Git que proíbe rebase a partir de outro checkout do repositório.
+func (m *Merger) RebaseInWorktree(worktreeDir string, targetBranch string) error {
+	var stderr bytes.Buffer
+	cmd := exec.Command("git", "-C", worktreeDir, "rebase", targetBranch)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		_ = exec.Command("git", "-C", worktreeDir, "rebase", "--abort").Run()
+		return fmt.Errorf("falha no rebase em %s sobre %s: %s (%w)", worktreeDir, targetBranch, strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
+}
+
+// MergeBranch executa o merge sem fast-forward do branch alvo no repositório principal com Quality Gate e reversão automática.
+func (m *Merger) MergeBranch(ctx context.Context, branchName string, commitMsg string, testCmd string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Remove .gitignore untracked no repositório raiz caso exista
+	rootGitIgnore := filepath.Join(m.RepoRoot, ".gitignore")
+	checkUntracked := exec.CommandContext(ctx, "git", "-C", m.RepoRoot, "status", "--porcelain", ".gitignore")
+	if out, err := checkUntracked.Output(); err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "??") {
+		_ = os.Remove(rootGitIgnore)
+	}
+
+	mergeCmd := exec.CommandContext(ctx, "git", "-C", m.RepoRoot, "merge", "--no-ff", branchName, "-m", commitMsg)
+	if out, err := mergeCmd.CombinedOutput(); err != nil {
+		_ = exec.Command("git", "-C", m.RepoRoot, "merge", "--abort").Run()
+		return fmt.Errorf("falha ao integrar branch %s: %s (%w)", branchName, strings.TrimSpace(string(out)), err)
+	}
+
+	// Executa o Quality Gate se especificado
+	if testCmd != "" {
+		testExec := exec.CommandContext(ctx, "sh", "-c", testCmd)
+		testExec.Dir = m.RepoRoot
+		if out, err := testExec.CombinedOutput(); err != nil {
+			_ = exec.Command("git", "-C", m.RepoRoot, "reset", "--hard", "HEAD~1").Run()
+			return fmt.Errorf("Quality Gate falhou no branch principal após merge de %s:\n%s (%w)", branchName, strings.TrimSpace(string(out)), err)
+		}
+	}
+
+	return nil
+}
+

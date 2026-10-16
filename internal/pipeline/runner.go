@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -21,11 +22,18 @@ type ProcessRunner interface {
 }
 
 // OSProcessRunner implementa ProcessRunner com controle estrito de processo via killpg.
-type OSProcessRunner struct{}
+type OSProcessRunner struct {
+	LogWriter io.Writer
+}
 
 // NewOSProcessRunner cria uma nova instância de OSProcessRunner.
 func NewOSProcessRunner() *OSProcessRunner {
 	return &OSProcessRunner{}
+}
+
+// NewOSProcessRunnerWithLogger cria uma nova instância com streaming em tempo real para um io.Writer.
+func NewOSProcessRunnerWithLogger(w io.Writer) *OSProcessRunner {
+	return &OSProcessRunner{LogWriter: w}
 }
 
 // RunEphemeral despacha o processo efêmero do agy-profile com isolamento em PGID.
@@ -46,8 +54,16 @@ func (r *OSProcessRunner) RunEphemeral(ctx context.Context, workdir string, acco
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	var outputBuf bytes.Buffer
-	cmd.Stdout = &outputBuf
-	cmd.Stderr = &outputBuf
+	var stdoutWriter io.Writer = &outputBuf
+	var stderrWriter io.Writer = &outputBuf
+
+	if r.LogWriter != nil {
+		stdoutWriter = io.MultiWriter(&outputBuf, r.LogWriter)
+		stderrWriter = io.MultiWriter(&outputBuf, r.LogWriter)
+	}
+
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
 
 	if err := cmd.Start(); err != nil {
 		return "", -1, fmt.Errorf("falha ao iniciar processo efêmero agy-profile: %w", err)

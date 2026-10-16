@@ -13,10 +13,10 @@ const (
 	RestrictedDirMode os.FileMode = 0700
 )
 
-// WriteRestrictedFile grava dados em um arquivo garantindo permissões 0600.
-// Caso o arquivo já exista, suas permissões são revalidadas com chmod 0600.
+// WriteRestrictedFile grava dados em um arquivo garantindo permissões 0600 e proteção contra TOCTOU via O_EXCL.
 func WriteRestrictedFile(filePath string, data []byte) error {
-	f, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, RestrictedFileMode)
+	_ = os.Remove(filePath) // Remove link ou arquivo pré-existente antes da criação atômica contra TOCTOU
+	f, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, RestrictedFileMode)
 	if err != nil {
 		return fmt.Errorf("falha ao criar arquivo restrito %s: %w", filePath, err)
 	}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/security"
 )
 
 // PromptBuilder constrói prompts otimizados sem ruído de mensageria para os processos efêmeros.
@@ -129,21 +130,13 @@ func WritePromptFile(workdir, prefix string, content string) (string, error) {
 		baseDir = filepath.Join(workdir, ".worktrees", "prompts")
 	}
 
-	if err := os.MkdirAll(baseDir, 0700); err != nil {
+	if err := os.MkdirAll(baseDir, security.RestrictedDirMode); err != nil {
 		return "", fmt.Errorf("falha ao criar pasta de prompts: %w", err)
 	}
 
 	filePath := filepath.Join(baseDir, fmt.Sprintf("%s-%d-%d.txt", prefix, os.Getpid(), time.Now().UnixNano()))
-	_ = os.Remove(filePath)
-
-	f, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return "", fmt.Errorf("falha ao criar arquivo de prompt 0600: %w", err)
-	}
-	defer f.Close()
-
-	if _, err := f.WriteString(strings.TrimSpace(content) + "\n"); err != nil {
-		return "", fmt.Errorf("falha ao escrever prompt: %w", err)
+	if err := security.WriteRestrictedFile(filePath, []byte(strings.TrimSpace(content)+"\n")); err != nil {
+		return "", fmt.Errorf("falha ao gravar arquivo de prompt restrito: %w", err)
 	}
 
 	return filePath, nil

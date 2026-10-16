@@ -31,3 +31,20 @@ func TestRebaseBranch_Nonexistent(t *testing.T) {
 		t.Errorf("esperado erro ao rebasear branch inexistente em repo vazio")
 	}
 }
+
+func TestRebaseInWorktree_Nonexistent(t *testing.T) {
+	m := NewMerger(t.TempDir())
+	err := m.RebaseInWorktree(t.TempDir(), "main")
+	if err == nil {
+		t.Errorf("esperado erro ao rebasear em diretório não-git")
+	}
+}
+
+func TestMergeBranch_Nonexistent(t *testing.T) {
+	m := NewMerger(t.TempDir())
+	err := m.MergeBranch(nil, "swarm/nonexistent", "merge msg", "")
+	if err == nil {
+		t.Errorf("esperado erro ao mesclar branch inexistente")
+	}
+}
+

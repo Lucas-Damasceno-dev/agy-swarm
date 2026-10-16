@@ -14,17 +14,45 @@ import (
 
 // Manager gerencia o ciclo de vida dos Git Worktrees dos especialistas.
 type Manager struct {
-	RepoRoot string
-	Roles    []config.RoleConfig
-	mu       sync.Mutex
+	RepoRoot  string
+	Roles     []config.RoleConfig
+	Namespace string
+	mu        sync.Mutex
 }
 
-// NewManager cria uma nova instância do gerenciador de worktrees.
+// NewManager cria uma nova instância do gerenciador de worktrees no namespace padrão.
 func NewManager(repoRoot string, roles []config.RoleConfig) *Manager {
 	return &Manager{
 		RepoRoot: repoRoot,
 		Roles:    roles,
 	}
+}
+
+// NewNamespacedManager cria uma nova instância de gerenciador de worktrees com isolamento por cartão/namespace.
+func NewNamespacedManager(repoRoot string, roles []config.RoleConfig, namespace string) *Manager {
+	return &Manager{
+		RepoRoot:  repoRoot,
+		Roles:     roles,
+		Namespace: strings.TrimSpace(namespace),
+	}
+}
+
+// DirForRole retorna o caminho do diretório da worktree do papel respeitando o namespace.
+func (m *Manager) DirForRole(role config.RoleConfig) string {
+	if m.Namespace != "" {
+		cleanNS := strings.ToLower(strings.ReplaceAll(m.Namespace, " ", "-"))
+		return filepath.Join(m.RepoRoot, ".worktrees", cleanNS, fmt.Sprintf("worker-%s", role.Type))
+	}
+	return filepath.Join(m.RepoRoot, ".worktrees", fmt.Sprintf("worker-%s", role.Type))
+}
+
+// BranchForRole retorna o nome do branch git do papel respeitando o namespace.
+func (m *Manager) BranchForRole(role config.RoleConfig) string {
+	if m.Namespace != "" {
+		cleanNS := strings.ToLower(strings.ReplaceAll(m.Namespace, " ", "-"))
+		return fmt.Sprintf("swarm/%s/%s", cleanNS, role.Type)
+	}
+	return fmt.Sprintf("swarm/%s", role.Type)
 }
 
 // EnsureGitRepo valida se o diretório é um repositório git válido.
@@ -37,25 +65,30 @@ func (m *Manager) EnsureGitRepo() error {
 	return nil
 }
 
-// EnsureGitIgnore garante que as pastas .worktrees e .gemini estejam presentes no .gitignore raiz.
+// EnsureGitIgnore garante que as pastas .worktrees e .gemini sejam ignoradas pelo Git.
+// Utiliza prioritariamente .git/info/exclude para evitar criar arquivos untracked no working tree raiz,
+// o que causaria conflitos de merge (exit status 2) quando branches efêmeros commitam .gitignore.
 func (m *Manager) EnsureGitIgnore() error {
-	gitignorePath := filepath.Join(m.RepoRoot, ".gitignore")
-	content, _ := os.ReadFile(gitignorePath)
-	s := string(content)
-	var appendLines []string
-	if !strings.Contains(s, ".worktrees/") && !strings.Contains(s, ".worktrees\n") {
-		appendLines = append(appendLines, ".worktrees/")
-	}
-	if !strings.Contains(s, ".gemini/") && !strings.Contains(s, ".gemini\n") {
-		appendLines = append(appendLines, ".gemini/")
-	}
-	if len(appendLines) > 0 {
-		f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return err
+	gitDir := filepath.Join(m.RepoRoot, ".git")
+	if fi, err := os.Stat(gitDir); err == nil && fi.IsDir() {
+		excludePath := filepath.Join(gitDir, "info", "exclude")
+		_ = os.MkdirAll(filepath.Dir(excludePath), 0755)
+		content, _ := os.ReadFile(excludePath)
+		s := string(content)
+		var appendLines []string
+		if !strings.Contains(s, ".worktrees/") && !strings.Contains(s, ".worktrees\n") {
+			appendLines = append(appendLines, ".worktrees/")
 		}
-		defer f.Close()
-		_, _ = f.WriteString("\n# agy-swarm worker worktrees e regras efêmeras\n" + strings.Join(appendLines, "\n") + "\n")
+		if !strings.Contains(s, ".gemini/") && !strings.Contains(s, ".gemini\n") {
+			appendLines = append(appendLines, ".gemini/")
+		}
+		if len(appendLines) > 0 {
+			f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err == nil {
+				defer f.Close()
+				_, _ = f.WriteString("\n# agy-swarm worker worktrees e regras efêmeras\n" + strings.Join(appendLines, "\n") + "\n")
+			}
+		}
 	}
 	return nil
 }
@@ -74,8 +107,8 @@ func (m *Manager) ProvisionRoleWorktreeFromBase(role config.RoleConfig, baseRef 
 		baseRef = "HEAD"
 	}
 
-	targetDir := filepath.Join(m.RepoRoot, ".worktrees", fmt.Sprintf("worker-%s", role.Type))
-	branchName := fmt.Sprintf("swarm/%s", role.Type)
+	targetDir := m.DirForRole(role)
+	branchName := m.BranchForRole(role)
 
 	_ = os.MkdirAll(filepath.Dir(targetDir), 0755)
 
@@ -150,38 +183,84 @@ func (m *Manager) ProvisionAll() (map[config.RoleType]string, error) {
 }
 
 // SafeCleanup remove os worktrees e branches temporários caso estejam sem alterações pendentes.
+// Suporta tanto limpeza global (m.Namespace == "") quanto limpeza isolada por cartão/namespace.
 func (m *Manager) SafeCleanup(force bool) error {
 	worktreesDir := filepath.Join(m.RepoRoot, ".worktrees")
-	if _, err := os.Stat(worktreesDir); os.IsNotExist(err) {
-		return nil
+
+	var targetPrefix string
+	var branchPattern string
+	if m.Namespace != "" {
+		cleanNS := strings.ToLower(strings.ReplaceAll(m.Namespace, " ", "-"))
+		targetPrefix = filepath.Join(worktreesDir, cleanNS)
+		branchPattern = fmt.Sprintf("refs/heads/swarm/%s/", cleanNS)
+	} else {
+		targetPrefix = worktreesDir
+		branchPattern = "refs/heads/swarm/"
 	}
 
-	for _, r := range m.Roles {
-		if r.Type == config.RoleLead {
-			continue
-		}
-		targetDir := filepath.Join(worktreesDir, fmt.Sprintf("worker-%s", r.Type))
-		if _, err := os.Stat(targetDir); os.IsNotExist(err) {
-			continue
-		}
+	hasWorktreesDir := false
+	if _, err := os.Stat(worktreesDir); err == nil {
+		hasWorktreesDir = true
+	}
 
-		// Checa alterações pendentes
-		if !force {
-			statusCmd := exec.Command("git", "status", "--porcelain")
-			statusCmd.Dir = targetDir
-			out, _ := statusCmd.Output()
-			if len(bytes.TrimSpace(out)) > 0 {
-				return fmt.Errorf("worktree %s possui alterações pendentes. Use --force para descartar ou faça commit", targetDir)
+	// 1. Localiza worktrees ativas registradas no Git
+	if hasWorktreesDir {
+		wtListOut, err := exec.Command("git", "-C", m.RepoRoot, "worktree", "list", "--porcelain").Output()
+		var registeredWorktrees []string
+		if err == nil {
+			lines := strings.Split(string(wtListOut), "\n")
+			for _, line := range lines {
+				if strings.HasPrefix(line, "worktree ") {
+					wtPath := strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+					// Verifica se a worktree pertence ao escopo alvo
+					rel, rErr := filepath.Rel(targetPrefix, wtPath)
+					if rErr == nil && !strings.HasPrefix(rel, "..") {
+						registeredWorktrees = append(registeredWorktrees, wtPath)
+					}
+				}
 			}
 		}
 
-		// Remove worktree
-		_ = exec.Command("git", "-C", m.RepoRoot, "worktree", "remove", "--force", targetDir).Run()
-		branchName := fmt.Sprintf("swarm/%s", r.Type)
-		_ = exec.Command("git", "-C", m.RepoRoot, "branch", "-D", branchName).Run()
+		// 2. Se !force, checa alterações pendentes em todas as worktrees identificadas
+		if !force {
+			for _, wtPath := range registeredWorktrees {
+				statusCmd := exec.Command("git", "-C", wtPath, "status", "--porcelain")
+				out, _ := statusCmd.Output()
+				if len(bytes.TrimSpace(out)) > 0 {
+					return fmt.Errorf("worktree %s possui alterações pendentes. Use --force para descartar ou faça commit", wtPath)
+				}
+			}
+		}
+
+		// 3. Remove as worktrees registradas
+		for _, wtPath := range registeredWorktrees {
+			_ = exec.Command("git", "-C", m.RepoRoot, "worktree", "remove", "--force", wtPath).Run()
+		}
+		_ = exec.Command("git", "-C", m.RepoRoot, "worktree", "prune").Run()
 	}
 
-	_ = exec.Command("git", "-C", m.RepoRoot, "worktree", "prune").Run()
-	_ = os.Remove(worktreesDir)
+	// 4. Remove branches temporários do swarm no escopo alvo
+	branchOut, _ := exec.Command("git", "-C", m.RepoRoot, "for-each-ref", "--format=%(refname:short)", branchPattern).Output()
+	for _, b := range strings.Split(strings.TrimSpace(string(branchOut)), "\n") {
+		b = strings.TrimSpace(b)
+		if b != "" {
+			_ = exec.Command("git", "-C", m.RepoRoot, "branch", "-D", b).Run()
+		}
+	}
+
+	// 5. Limpa diretórios residuais no sistema de arquivos
+	if hasWorktreesDir {
+		if m.Namespace != "" {
+			_ = os.RemoveAll(targetPrefix)
+			entries, _ := os.ReadDir(worktreesDir)
+			if len(entries) == 0 {
+				_ = os.Remove(worktreesDir)
+			}
+		} else {
+			_ = os.RemoveAll(worktreesDir)
+		}
+	}
+
 	return nil
 }
+

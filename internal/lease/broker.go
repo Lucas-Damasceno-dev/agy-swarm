@@ -185,6 +185,7 @@ type AccountStatusSnapshot struct {
 	Score           float64
 	WeeklyPercent   float64
 	FiveHourPercent float64
+	Elapsed         time.Duration
 }
 
 // CalculateAccountScores calcula a pontuação de saúde das 10 contas disponíveis.
@@ -408,6 +409,9 @@ func (b *Broker) Snapshots() []AccountStatusSnapshot {
 			snap.Status = "BUSY"
 			snap.CurrentRole = lease.Role
 			snap.CurrentStage = lease.Stage
+			if !lease.AcquiredAt.IsZero() {
+				snap.Elapsed = now.Sub(lease.AcquiredAt)
+			}
 		} else if exp, cd := b.cooldowns[acc]; cd && now.Before(exp) {
 			snap.Status = "COOLDOWN"
 		} else if profiles != nil {

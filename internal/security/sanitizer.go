@@ -7,9 +7,23 @@ import (
 )
 
 var (
-	// ansiRegex detecta sequências de escape ANSI/VT100 (CSI, OSC, etc.).
-	ansiRegex = regexp.MustCompile(`\x1b(\[[0-9;]*[a-zA-Z]|\].*?(\x07|\x1b\\)|[PX^_].*?\x1b\\|[()][AB012])`)
+	// ansiRegex detecta sequências de escape ANSI/VT100 (CSI, OSC, etc.), cobrindo OSC 52 e sequências estendidas.
+	ansiRegex = regexp.MustCompile(`\x1b(\[[0-9;]*[a-zA-Z~]|\][^\x07\x1b]*(\x07|\x1b\\)|[PX^_][^\x1b]*\x1b\\|[()][AB012])`)
 )
+
+// SanitizeInput remove bytes nulos, sequências de escape ANSI e normaliza quebras de linha.
+func SanitizeInput(s string) string {
+	// Remove bytes nulos
+	s = strings.ReplaceAll(s, "\x00", "")
+	// Remove sequências ANSI conhecidas
+	s = ansiRegex.ReplaceAllString(s, "")
+	// Remove qualquer ESC residual
+	s = strings.ReplaceAll(s, "\x1b", "")
+	// Normaliza quebras de linha carriage-return
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "")
+	return s
+}
 
 // SanitizePTYInput sanitiza texto a ser enviado para o PTY via SendKeys,
 // neutralizando escapes ANSI maliciosos, quebras de linha acidentais e caracteres de controle.
@@ -21,7 +35,7 @@ func SanitizePTYInput(input string) string {
 	// 1. Remove sequências de escape ANSI que tentam redefinir terminal ou injetar comandos
 	cleaned := ansiRegex.ReplaceAllString(input, "")
 
-	// 2. Normaliza quebras de linha e retornos de carro para evitar execução prematura
+	// 2. Normaliza quebras de linha e retornos de carro para espaços para evitar execução prematura no PTY
 	cleaned = strings.ReplaceAll(cleaned, "\r\n", " ")
 	cleaned = strings.ReplaceAll(cleaned, "\r", " ")
 	cleaned = strings.ReplaceAll(cleaned, "\n", " ")

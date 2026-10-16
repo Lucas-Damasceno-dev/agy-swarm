@@ -102,3 +102,41 @@ func TestBuild3ZoneLayoutSessionSurvival(t *testing.T) {
 		t.Errorf("pane de viewport não existe na sessão ativa")
 	}
 }
+
+func TestSaveAndHydratePanesToRuntime(t *testing.T) {
+	tmpDir := t.TempDir()
+	session := "test-hydrate-session"
+	d1 := NewDriver(session, tmpDir)
+	d1.Panes[config.RoleLead] = &PaneInfo{ID: "%10", Role: config.RoleConfig{Type: config.RoleLead, Name: "Maestro"}}
+	d1.Panes["viewport"] = &PaneInfo{ID: "%11", Role: config.RoleConfig{Type: "viewport", Name: "Viewport"}}
+
+	if err := d1.SavePanesToRuntime(tmpDir); err != nil {
+		t.Fatalf("SavePanesToRuntime falhou: %v", err)
+	}
+
+	d2 := NewDriver(session, tmpDir)
+	if err := d2.HydratePanesFromRuntime(tmpDir); err != nil {
+		t.Fatalf("HydratePanesFromRuntime falhou: %v", err)
+	}
+
+	if p, ok := d2.Panes[config.RoleLead]; !ok || p.ID != "%10" {
+		t.Errorf("esperava pane do lead hidratado com %%10, obteve: %+v", p)
+	}
+	if p, ok := d2.Panes["viewport"]; !ok || p.ID != "%11" {
+		t.Errorf("esperava pane de viewport hidratado com %%11, obteve: %+v", p)
+	}
+}
+
+func TestSendLiteralViewportProtection(t *testing.T) {
+	d := NewDriver("test-protect", "/tmp")
+	// Especialista compartilha o mesmo pane ID do viewport
+	d.Panes["viewport"] = &PaneInfo{ID: "%99", Role: config.RoleConfig{Type: "viewport"}}
+	d.Panes[config.RoleQA] = &PaneInfo{ID: "%99", Role: config.RoleConfig{Type: config.RoleQA}}
+
+	// Envio para especialista compartilhado deve retornar nil (silenciado) sem chamar exec
+	err := d.SendLiteral(config.RoleQA, "mensagem invasiva")
+	if err != nil {
+		t.Errorf("esperava envio silenciado sem erro, obteve: %v", err)
+	}
+}
+
