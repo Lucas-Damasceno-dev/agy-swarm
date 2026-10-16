@@ -18,6 +18,7 @@ const (
 	StatusInProgress CardStatus = "IN_PROGRESS"
 	StatusDone       CardStatus = "DONE"
 	StatusBlocked    CardStatus = "BLOCKED"
+	StatusFailed     CardStatus = "FAILED"
 )
 
 // Card representa uma unidade atômica de trabalho executável pelo Pipeline Adversarial.
@@ -281,3 +282,79 @@ func (b *Board) FormatTable() string {
 	sb.WriteString(strings.Repeat("─", 78) + "\n")
 	return sb.String()
 }
+
+// FindCard localiza um cartão pelo ID no quadro.
+func (b *Board) FindCard(id string) *Card {
+	id = strings.TrimSpace(id)
+	for i, c := range b.Cards {
+		if strings.EqualFold(c.ID, id) {
+			return &b.Cards[i]
+		}
+	}
+	return nil
+}
+
+// RetryCard reseta o status do cartão para BACKLOG, limpando qualquer erro registrado.
+func (b *Board) RetryCard(id string) error {
+	id = strings.TrimSpace(id)
+	for i, c := range b.Cards {
+		if strings.EqualFold(c.ID, id) {
+			b.Cards[i].Status = StatusBacklog
+			b.Cards[i].Error = ""
+			b.Cards[i].Winner = ""
+			b.Cards[i].UpdatedAt = time.Now().UTC()
+			return nil
+		}
+	}
+	return fmt.Errorf("cartão %q não encontrado", id)
+}
+
+// ExportMarkdown retorna uma tabela GitHub Flavored Markdown do quadro com métricas do épico.
+func (b *Board) ExportMarkdown() string {
+	var sb strings.Builder
+	doneCount := 0
+	for _, c := range b.Cards {
+		if c.Status == StatusDone {
+			doneCount++
+		}
+	}
+	total := len(b.Cards)
+	pct := 0
+	if total > 0 {
+		pct = (doneCount * 100) / total
+	}
+
+	sb.WriteString(fmt.Sprintf("## 📋 Épico: %s\n\n", b.Epic))
+	sb.WriteString(fmt.Sprintf("**Progresso:** %d/%d cartões concluídos (%d%%)\n\n", doneCount, total, pct))
+	sb.WriteString("| ID | Status | Dependências | Título | Vencedor / Detalhe |\n")
+	sb.WriteString("|---|---|---|---|---|\n")
+
+	for _, c := range b.Cards {
+		statusBadge := string(c.Status)
+		switch c.Status {
+		case StatusDone:
+			statusBadge = "✅ DONE"
+		case StatusInProgress:
+			statusBadge = "⚡ IN_PROGRESS"
+		case StatusBlocked:
+			statusBadge = "🚫 BLOCKED"
+		case StatusFailed:
+			statusBadge = "❌ FAILED"
+		default:
+			statusBadge = "⏳ BACKLOG"
+		}
+		deps := "-"
+		if len(c.DependsOn) > 0 {
+			deps = strings.Join(c.DependsOn, ", ")
+		}
+		detail := "-"
+		if c.Winner != "" {
+			detail = fmt.Sprintf("🏆 %s", c.Winner)
+		} else if c.Error != "" {
+			detail = fmt.Sprintf("⚠️ %s", c.Error)
+		}
+		sb.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s | %s |\n", c.ID, statusBadge, deps, c.Title, detail))
+	}
+	return sb.String()
+}
+

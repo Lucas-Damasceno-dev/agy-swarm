@@ -148,3 +148,43 @@ func TestDisjointScopeLockInWave(t *testing.T) {
 		t.Errorf("cartões com escopo colidente entraram na mesma onda: %+v", wave)
 	}
 }
+
+func TestKanbanRetryAndExport(t *testing.T) {
+	b := NewBoard("Épico de Teste de Retry e Export")
+	_ = b.AddCard(Card{ID: "CARD-01", Title: "Setup", Status: StatusDone, Winner: "arch"})
+	_ = b.AddCard(Card{ID: "CARD-02", Title: "Feature", Status: StatusFailed, Error: "compilation error"})
+
+	// Testa export markdown
+	md := b.ExportMarkdown()
+	if !strings.Contains(md, "## 📋 Épico: Épico de Teste de Retry e Export") {
+		t.Errorf("markdown deve conter título do épico: %s", md)
+	}
+	if !strings.Contains(md, "1/2 cartões concluídos (50%)") {
+		t.Errorf("markdown deve conter percentual correto: %s", md)
+	}
+	if !strings.Contains(md, "❌ FAILED") || !strings.Contains(md, "✅ DONE") {
+		t.Errorf("markdown deve conter badges corretos: %s", md)
+	}
+
+	// Testa RetryCard
+	if err := b.RetryCard("CARD-02"); err != nil {
+		t.Fatalf("erro ao executar RetryCard: %v", err)
+	}
+
+	card2 := b.FindCard("CARD-02")
+	if card2 == nil {
+		t.Fatal("CARD-02 não encontrado")
+	}
+	if card2.Status != StatusBacklog {
+		t.Errorf("esperava StatusBacklog após retry, obteve %s", card2.Status)
+	}
+	if card2.Error != "" {
+		t.Errorf("esperava erro limpo após retry, obteve %s", card2.Error)
+	}
+
+	// Erro em cartão inexistente
+	if err := b.RetryCard("CARD-999"); err == nil {
+		t.Error("esperava erro ao tentar retry em cartão inexistente")
+	}
+}
+

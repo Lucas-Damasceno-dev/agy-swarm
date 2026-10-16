@@ -292,6 +292,45 @@ func handleKanban() {
 			os.Exit(1)
 		}
 
+	case "retry":
+		fs := flag.NewFlagSet("kanban retry", flag.ExitOnError)
+		pID := fs.String("id", "", "ID do cartão a reiniciar para BACKLOG (ex: CARD-01)")
+		_ = fs.Parse(subArgs)
+
+		cardID := *pID
+		if cardID == "" && len(fs.Args()) > 0 {
+			cardID = fs.Args()[0]
+		}
+		if cardID == "" {
+			fmt.Fprintln(os.Stderr, "Erro: informe o ID do cartão via -id CARD-XX ou argumento posicional.")
+			os.Exit(1)
+		}
+
+		b, err := kanban.LoadBoard(boardPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Erro ao carregar quadro: %v\n", err)
+			os.Exit(1)
+		}
+
+		if err := b.RetryCard(cardID); err != nil {
+			fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+			os.Exit(1)
+		}
+
+		if err := b.Save(boardPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Erro ao salvar quadro: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("🔄 Cartão %s resetado para BACKLOG (erros e bloqueios limpos).\n", cardID)
+
+	case "export":
+		b, err := kanban.LoadBoard(boardPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Erro ao carregar quadro: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(b.ExportMarkdown())
+
 	default:
 		fmt.Fprintf(os.Stderr, "Subcomando kanban desconhecido: %s\n", subcmd)
 		printKanbanUsage()
@@ -334,6 +373,8 @@ Uso:
   agy-swarm kanban next [--json]
   agy-swarm kanban add -id <ID> -title "<título>" [-depends "ID1,ID2"] [-scope "api/,core/"] [-test-cmd "<cmd>"] "<spec>"
   agy-swarm kanban set -id <ID> -status <BACKLOG|IN_PROGRESS|DONE|BLOCKED> [-winner "..."] [-error "..."]
+  agy-swarm kanban retry <ID>
+  agy-swarm kanban export
   agy-swarm kanban step
   agy-swarm kanban wave [-max-parallel 3] [--auto-merge] [-inline]
 `)
