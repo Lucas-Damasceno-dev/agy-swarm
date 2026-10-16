@@ -81,22 +81,65 @@ func TestPidFilePath(t *testing.T) {
 }
 
 func TestDetectDefaultTestCmd(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Default sem nenhum dos dois
-	if cmd := detectDefaultTestCmd(tmpDir); cmd != "go test ./..." {
-		t.Errorf("esperava 'go test ./...', obteve %q", cmd)
-	}
+	// Fallback neutro sem nenhum arquivo de projeto
+	t.Run("FallbackTrue", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		if cmd := detectDefaultTestCmd(tmpDir); cmd != "true" {
+			t.Errorf("esperava 'true', obteve %q", cmd)
+		}
+	})
 
 	// Com go.mod
-	_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module test"), 0644)
-	if cmd := detectDefaultTestCmd(tmpDir); cmd != "go test ./..." {
-		t.Errorf("esperava 'go test ./...', obteve %q", cmd)
-	}
+	t.Run("GoMod", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module test"), 0644)
+		if cmd := detectDefaultTestCmd(tmpDir); cmd != "go test ./..." {
+			t.Errorf("esperava 'go test ./...', obteve %q", cmd)
+		}
+	})
 
-	// Com Cargo.toml (prevalece Rust)
-	_ = os.WriteFile(filepath.Join(tmpDir, "Cargo.toml"), []byte("[package]\nname = \"test\""), 0644)
-	if cmd := detectDefaultTestCmd(tmpDir); cmd != "cargo test --workspace" {
-		t.Errorf("esperava 'cargo test --workspace', obteve %q", cmd)
-	}
+	// Com Cargo.toml
+	t.Run("Cargo", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(tmpDir, "Cargo.toml"), []byte("[package]\nname = \"test\""), 0644)
+		if cmd := detectDefaultTestCmd(tmpDir); cmd != "cargo test --workspace" {
+			t.Errorf("esperava 'cargo test --workspace', obteve %q", cmd)
+		}
+	})
+
+	// Com flake.nix
+	t.Run("FlakeNix", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(tmpDir, "flake.nix"), []byte("{ description = \"test\"; }"), 0644)
+		if cmd := detectDefaultTestCmd(tmpDir); cmd != "nix flake check" {
+			t.Errorf("esperava 'nix flake check', obteve %q", cmd)
+		}
+	})
+
+	// Com package.json
+	t.Run("NodePackageJSON", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(tmpDir, "package.json"), []byte("{\"scripts\":{\"test\":\"jest\"}}"), 0644)
+		if cmd := detectDefaultTestCmd(tmpDir); cmd != "npm test" {
+			t.Errorf("esperava 'npm test', obteve %q", cmd)
+		}
+	})
+
+	// Com pyproject.toml
+	t.Run("PythonPyproject", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(tmpDir, "pyproject.toml"), []byte("[tool.pytest]"), 0644)
+		if cmd := detectDefaultTestCmd(tmpDir); cmd != "pytest" {
+			t.Errorf("esperava 'pytest', obteve %q", cmd)
+		}
+	})
+
+	// Com Makefile contendo target test:
+	t.Run("MakefileTest", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(tmpDir, "Makefile"), []byte("test:\n\t@echo ok"), 0644)
+		if cmd := detectDefaultTestCmd(tmpDir); cmd != "make test" {
+			t.Errorf("esperava 'make test', obteve %q", cmd)
+		}
+	})
 }

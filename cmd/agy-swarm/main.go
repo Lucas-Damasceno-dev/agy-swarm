@@ -152,6 +152,9 @@ func main() {
 		case "autopilot":
 			handleAutopilot()
 			return
+		case "doctor":
+			handleDoctor()
+			return
 		case "help", "-h", "--help":
 			usage()
 			return
@@ -513,11 +516,11 @@ func handleClean() {
 	}
 
 	wtMgr := worktree.NewManager(cwd, config.AllRoles())
-	if err := wtMgr.SafeCleanup(force); err != nil {
-		fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
+	if err := wtMgr.ReapOrphanWorktrees(force); err != nil {
+		fmt.Fprintf(os.Stderr, "Erro ao expurgar worktrees: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("✓ Worktrees limpos com sucesso.")
+	fmt.Println("✓ Todas as worktrees órfãs e branches efêmeros foram limpos com sucesso.")
 }
 
 func handleStatus() {
@@ -700,14 +703,34 @@ func handleDispatch() {
 	handlePipeline()
 }
 
-// detectDefaultTestCmd identifica se o repositório é Rust (Cargo.toml) ou Go (go.mod) para selecionar o Quality Gate padrão.
+// detectDefaultTestCmd identifica o ecossistema do repositório (Nix, Rust, Go, Node, Python, Makefile) para selecionar o Quality Gate padrão.
 func detectDefaultTestCmd(repoRoot string) string {
+	if _, err := os.Stat(filepath.Join(repoRoot, "flake.nix")); err == nil {
+		return "nix flake check"
+	}
 	if _, err := os.Stat(filepath.Join(repoRoot, "Cargo.toml")); err == nil {
 		return "cargo test --workspace"
 	}
 	if _, err := os.Stat(filepath.Join(repoRoot, "go.mod")); err == nil {
 		return "go test ./..."
 	}
-	return "go test ./..."
+	if _, err := os.Stat(filepath.Join(repoRoot, "pnpm-lock.yaml")); err == nil {
+		return "pnpm test"
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, "package.json")); err == nil {
+		return "npm test"
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, "pyproject.toml")); err == nil {
+		return "pytest"
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, "pytest.ini")); err == nil {
+		return "pytest"
+	}
+	if mkData, err := os.ReadFile(filepath.Join(repoRoot, "Makefile")); err == nil {
+		if strings.Contains(string(mkData), "test:") || strings.Contains(string(mkData), "\ntest\t") {
+			return "make test"
+		}
+	}
+	return "true"
 }
 
