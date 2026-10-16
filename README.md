@@ -83,6 +83,28 @@ agy-swarm pipeline -auto-merge -test-cmd "go test -race ./..." "Criar middleware
 # Simulação de pipeline sem disparar chamadas ou alterar branches (Dry-Run):
 agy-swarm pipeline -dry-run "Refatorar módulo de autenticação"
 
+# Orquestração Kanban Swarm (Control Plane do Maestro via DAG de Cartões):
+agy-swarm kanban init "Refatoração do Motor de Renderização"
+agy-swarm kanban add -id CARD-01 -title "Definir Interfaces" -test-cmd "cargo test -p engine-core" "Spec..."
+agy-swarm kanban add -id CARD-02 -title "Implementar Shaders" -depends "CARD-01" "Spec..."
+agy-swarm kanban status          # Tabela visual do quadro
+agy-swarm kanban next            # Identifica próximo cartão elegível no DAG
+agy-swarm kanban step            # Despacha automaticamente o próximo cartão para o enxame
+agy-swarm kanban wave -max-parallel 3 --auto-merge # Executa onda de cartões paralelos independentes
+agy-swarm kanban set -id CARD-01 -status DONE  # Marca cartão concluído
+
+# Piloto Automático em Ondas Consecutivas até Esgotar Backlog:
+agy-swarm autopilot -max-waves 5 -max-parallel 3 --auto-merge
+
+# Hub de Gerenciamento das 10 Contas (Multicall Binary agy-hub):
+agy-hub                          # Abre TUI interativo Bubbletea
+agy-hub status                   # Tabela de cotas (5h e semanal), cooldowns e PIDs
+agy-hub daemon                   # Inicia daemon de monitoramento contínuo em background
+agy-hub auto                     # Executa tarefa na conta com maior cota restante
+agy-hub which                    # Identifica qual conta seria eleita para execução
+agy-hub sync                     # Sincroniza tokens com o cli-proxy-api local
+agy-hub install-systemd          # Registra e ativa o serviço de daemon no systemd user
+
 # Iniciar sessão Tmux no Layout de 3 Zonas:
 agy-swarm "Refatorar camada de banco de dados"
 
@@ -108,11 +130,20 @@ agy-swarm clean [--force]
 
 ---
 
+## 🖥️ Integração Desktop Quickshell (Wayland)
+
+O diretório `quickshell/` contém os componentes QML para integração direta com a status bar do sistema:
+- `BarAgyHub.qml`: Indicador na barra com percentual consolidado do cluster e alertas de cooldown.
+- `AgyHubPopup.qml`: Painel detalhado exibindo as 10 contas, PIDs ativos, cotas e atalhos de sincronização.
+- `AgyHubService.qml`: Singleton de integração com `agy-hub` e `cli-proxy-api`.
+
+---
+
 ## 🛠️ Build & Instalação
 
 ```bash
 make build    # Compila binário otimizado em bin/agy-swarm
-make test     # Executa suíte de testes unitários (62+ testes)
-make install  # Instala binário em ~/.local/bin/agy-swarm
+make test     # Executa suíte de testes unitários (124+ testes)
+make install  # Instala binário em ~/.local/bin/agy-swarm e cria symlink agy-hub
 make clean    # Remove artefatos temporários de compilação
 ```

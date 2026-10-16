@@ -12,10 +12,12 @@ build:
 install: build
 	@mkdir -p $(HOME)/.local/bin
 	install -m 755 $(BINARY_NAME) $(HOME)/.local/bin/agy-swarm
+	@ln -sf agy-swarm $(HOME)/.local/bin/agy-hub
 	@if [ -d "/home/lucas/.local/bin" ] && [ "$(HOME)" != "/home/lucas" ]; then \
 		mkdir -p /home/lucas/.local/bin && install -m 755 $(BINARY_NAME) /home/lucas/.local/bin/agy-swarm; \
+		ln -sf agy-swarm /home/lucas/.local/bin/agy-hub; \
 	fi
-	@echo "✓ Instalado em $(HOME)/.local/bin/agy-swarm"
+	@echo "✓ Instalado em $(HOME)/.local/bin/agy-swarm (com symlink agy-hub)"
 
 test:
 	go test -v ./...
