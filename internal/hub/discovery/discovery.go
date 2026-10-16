@@ -135,7 +135,8 @@ func DiscoverProfiles() ([]*model.Profile, error) {
 
 	var accountDirs []string
 	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() != "default" {
+		// "default" já é mapeado como agy-1; ignorar "account1" para evitar duplicata
+		if entry.IsDir() && entry.Name() != "default" && entry.Name() != "account1" {
 			accountDirs = append(accountDirs, entry.Name())
 		}
 	}
