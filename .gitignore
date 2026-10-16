@@ -3,8 +3,11 @@
 
 # Binaries and runtime artifacts
 bin/
+/agy-swarm
 *.pid
 *.log
 *.zip
 *.txt
+*.db
+*.sqlite
 .gemini/
