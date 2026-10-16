@@ -264,3 +264,46 @@ func (m *Manager) SafeCleanup(force bool) error {
 	return nil
 }
 
+// ReapOrphanWorktrees executa uma varredura e expurgo global de todas as worktrees em .worktrees/,
+// incluindo namespaces do kanban, executando git worktree prune e removendo branches temporários 'swarm/*'.
+func (m *Manager) ReapOrphanWorktrees(force bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	worktreesDir := filepath.Join(m.RepoRoot, ".worktrees")
+	if _, err := os.Stat(worktreesDir); err != nil {
+		return nil
+	}
+
+	// 1. Remove todas as worktrees registradas no Git sob .worktrees/
+	wtListOut, err := exec.Command("git", "-C", m.RepoRoot, "worktree", "list", "--porcelain").Output()
+	if err == nil {
+		lines := strings.Split(string(wtListOut), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "worktree ") {
+				wtPath := strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+				rel, rErr := filepath.Rel(worktreesDir, wtPath)
+				if rErr == nil && !strings.HasPrefix(rel, "..") {
+					_ = exec.Command("git", "-C", m.RepoRoot, "worktree", "remove", "--force", wtPath).Run()
+				}
+			}
+		}
+	}
+
+	_ = exec.Command("git", "-C", m.RepoRoot, "worktree", "prune").Run()
+
+	// 2. Remove branches temporários swarm/*
+	branchOut, _ := exec.Command("git", "-C", m.RepoRoot, "for-each-ref", "--format=%(refname:short)", "refs/heads/swarm/*").Output()
+	for _, b := range strings.Split(strings.TrimSpace(string(branchOut)), "\n") {
+		b = strings.TrimSpace(b)
+		if b != "" {
+			_ = exec.Command("git", "-C", m.RepoRoot, "branch", "-D", b).Run()
+		}
+	}
+
+	// 3. Remove diretório residual .worktrees/
+	_ = os.RemoveAll(worktreesDir)
+	return nil
+}
+
+

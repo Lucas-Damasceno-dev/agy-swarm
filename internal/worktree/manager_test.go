@@ -79,3 +79,37 @@ func TestSafeCleanup_NamespacedWorktreesAndBranches(t *testing.T) {
 		t.Errorf("branch com namespace %s não foi excluído pelo SafeCleanup", branchName)
 	}
 }
+
+func TestReapOrphanWorktrees(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	_ = exec.Command("git", "-C", tmpDir, "init").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.name", "Test").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.email", "test@example.com").Run()
+
+	baseFile := filepath.Join(tmpDir, "README.md")
+	_ = os.WriteFile(baseFile, []byte("# Repo\n"), 0644)
+	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "init").Run()
+
+	// Cria uma worktree sob .worktrees/nested/orphan
+	orphanDir := filepath.Join(tmpDir, ".worktrees", "nested", "orphan")
+	_ = exec.Command("git", "-C", tmpDir, "worktree", "add", "-b", "swarm/orphan-branch", orphanDir, "HEAD").Run()
+
+	mgr := NewManager(tmpDir, nil)
+	if err := mgr.ReapOrphanWorktrees(true); err != nil {
+		t.Fatalf("ReapOrphanWorktrees falhou: %v", err)
+	}
+
+	// Verifica se .worktrees foi eliminado
+	if _, err := os.Stat(filepath.Join(tmpDir, ".worktrees")); !os.IsNotExist(err) {
+		t.Error("esperava que .worktrees fosse completamente removido")
+	}
+
+	// Verifica se branch swarm/orphan-branch foi excluído
+	branchCheck, _ := exec.Command("git", "-C", tmpDir, "branch", "--list", "swarm/orphan-branch").Output()
+	if strings.Contains(string(branchCheck), "swarm/orphan-branch") {
+		t.Error("esperava que swarm/orphan-branch fosse excluído")
+	}
+}
+
