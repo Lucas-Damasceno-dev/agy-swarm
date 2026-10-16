@@ -104,7 +104,7 @@ agy-swarm autopilot -max-waves 5 -max-parallel 3 --auto-merge
 # Hub de Gerenciamento das 10 Contas (Multicall Binary agy-hub):
 agy-hub                          # Abre TUI interativo Bubbletea
 agy-hub status                   # Tabela de cotas (5h e semanal), cooldowns e PIDs
-agy-hub daemon                   # Inicia daemon de monitoramento contínuo em background
+agy-hub daemon [-http-port 8318] # Inicia daemon residente com métricas Prometheus (http://localhost:8318/metrics)
 agy-hub auto                     # Executa tarefa na conta com maior cota restante
 agy-hub which                    # Identifica qual conta seria eleita para execução
 agy-hub sync                     # Sincroniza tokens com o cli-proxy-api local
@@ -148,7 +148,7 @@ O diretório `quickshell/` contém os componentes QML para integração direta c
 
 ```bash
 make build    # Compila binário otimizado em bin/agy-swarm
-make test     # Executa suíte de testes unitários (135+ testes)
+make test     # Executa suíte de testes unitários (136+ testes)
 make install  # Instala binário em ~/.local/bin/agy-swarm e cria symlink agy-hub
 make clean    # Remove artefatos temporários de compilação
 ```

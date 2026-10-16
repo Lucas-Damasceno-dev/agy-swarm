@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -35,6 +37,8 @@ var SocketPath = GetDefaultSocketPath()
 
 type Server struct {
 	socketPath   string
+	httpPort     int
+	httpServer   *http.Server
 	collector    *collector.Collector
 	orchestrator *orchestrator.Orchestrator
 	syncer       *syncer.Syncer
@@ -63,6 +67,11 @@ func NewServerWithSocket(socketPath string) *Server {
 	}
 }
 
+// SetHTTPPort configura a porta HTTP para exportação de métricas Prometheus e health check.
+func (s *Server) SetHTTPPort(port int) {
+	s.httpPort = port
+}
+
 // Start runs the daemon loop and listens on the configured unix socket
 func (s *Server) Start() error {
 	_ = os.Remove(s.socketPath)
@@ -74,6 +83,9 @@ func (s *Server) Start() error {
 	s.listener = l
 	_ = os.Chmod(s.socketPath, 0600)
 	s.running.Store(true)
+
+	// Inicia servidor HTTP se configurado
+	s.startHTTPServer()
 
 	// Background ticker for telemetry and quarantine (with immediate initial collect)
 	go func() {
@@ -120,12 +132,146 @@ func (s *Server) Start() error {
 	return nil
 }
 
+func (s *Server) startHTTPServer() {
+	if s.httpPort <= 0 {
+		return
+	}
+
+	mux := http.NewServeMux()
+
+	// 1. Health check JSON
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.RLock()
+		st := s.cachedState
+		s.mu.RUnlock()
+
+		if st == nil {
+			if fresh, err := s.collector.CollectAll(); err == nil {
+				s.mu.Lock()
+				s.cachedState = fresh
+				st = fresh
+				s.mu.Unlock()
+			}
+		}
+
+		status := "healthy"
+		activeProfiles := 0
+		if st != nil {
+			for _, p := range st.Profiles {
+				if p.Status == model.StatusActive || p.Status == model.StatusIdle {
+					activeProfiles++
+				}
+			}
+		}
+
+		resp := map[string]interface{}{
+			"status":          status,
+			"unix_socket":     s.socketPath,
+			"active_profiles": activeProfiles,
+			"proxy_running":   st != nil && st.ProxyRunning,
+			"hermes_running":  st != nil && st.HermesRunning,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	// 2. Metrics OpenMetrics/Prometheus
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.RLock()
+		st := s.cachedState
+		s.mu.RUnlock()
+
+		if st == nil {
+			if fresh, err := s.collector.CollectAll(); err == nil {
+				s.mu.Lock()
+				s.cachedState = fresh
+				st = fresh
+				s.mu.Unlock()
+			}
+		}
+
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		if st == nil {
+			fmt.Fprintln(w, "# agy_hub daemon initializing")
+			return
+		}
+
+		var sb strings.Builder
+		sb.WriteString("# HELP agy_cluster_remaining_tokens Total de tokens restantes no cluster\n")
+		sb.WriteString("# TYPE agy_cluster_remaining_tokens gauge\n")
+		sb.WriteString(fmt.Sprintf("agy_cluster_remaining_tokens %d\n\n", st.ClusterRemainingTokens))
+
+		sb.WriteString("# HELP agy_cluster_quota_percent Percentual consolidado de cota\n")
+		sb.WriteString("# TYPE agy_cluster_quota_percent gauge\n")
+		sb.WriteString(fmt.Sprintf("agy_cluster_quota_percent %d\n\n", st.ClusterQuotaPercent))
+
+		sb.WriteString("# HELP agy_account_remaining_tokens Tokens restantes por perfil\n")
+		sb.WriteString("# TYPE agy_account_remaining_tokens gauge\n")
+		for _, p := range st.Profiles {
+			sb.WriteString(fmt.Sprintf("agy_account_remaining_tokens{account=%q,id=%q} %d\n", p.Alias, p.ID, p.RemainingTokens))
+		}
+
+		sb.WriteString("\n# HELP agy_account_rpm Requisicoes por minuto por perfil\n")
+		sb.WriteString("# TYPE agy_account_rpm gauge\n")
+		for _, p := range st.Profiles {
+			sb.WriteString(fmt.Sprintf("agy_account_rpm{account=%q,id=%q} %d\n", p.Alias, p.ID, p.RPM))
+		}
+
+		sb.WriteString("\n# HELP agy_account_status Status da conta (1=active, 0=idle, -1=cooldown_ou_error)\n")
+		sb.WriteString("# TYPE agy_account_status gauge\n")
+		for _, p := range st.Profiles {
+			val := 0
+			if p.Status == model.StatusActive {
+				val = 1
+			} else if p.Status == model.StatusError || p.InCooldown {
+				val = -1
+			}
+			sb.WriteString(fmt.Sprintf("agy_account_status{account=%q,id=%q,status=%q} %d\n", p.Alias, p.ID, p.Status, val))
+		}
+
+		_, _ = w.Write([]byte(sb.String()))
+	})
+
+	// 3. API Status JSON completo
+	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.RLock()
+		st := s.cachedState
+		s.mu.RUnlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if st == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"initializing"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(st)
+	})
+
+	addr := fmt.Sprintf("127.0.0.1:%d", s.httpPort)
+	s.httpServer = &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	go func() {
+		fmt.Printf("📊 Métricas Prometheus e Health Check ativos em http://%s/metrics\n", addr)
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "Aviso: servidor HTTP agy-hub encerrou com erro: %v\n", err)
+		}
+	}()
+}
+
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
 		s.running.Store(false)
 		close(s.stopChan)
 		if s.listener != nil {
 			_ = s.listener.Close()
+		}
+		if s.httpServer != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			_ = s.httpServer.Shutdown(ctx)
+			cancel()
 		}
 		s.wg.Wait()
 		_ = os.Remove(s.socketPath)

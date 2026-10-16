@@ -53,7 +53,7 @@ func handleHub(args []string) {
 		runSync()
 
 	case "daemon":
-		runDaemon()
+		runDaemon(args[1:])
 
 	case "install-systemd":
 		runInstallSystemd()
@@ -84,8 +84,15 @@ func runTUI() {
 	}
 }
 
-func runDaemon() {
+func runDaemon(args []string) {
+	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
+	pHTTPPort := fs.Int("http-port", 8318, "Porta HTTP para métricas Prometheus e health check (0 para desativar)")
+	_ = fs.Parse(args)
+
 	d := daemon.NewServer()
+	if *pHTTPPort > 0 {
+		d.SetHTTPPort(*pHTTPPort)
+	}
 	if err := d.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Erro ao iniciar daemon: %v\n", err)
 		os.Exit(1)

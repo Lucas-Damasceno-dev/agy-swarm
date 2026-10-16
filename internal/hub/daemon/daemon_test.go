@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"io"
+	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -116,3 +119,52 @@ func TestDaemon_ConcurrentClients(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestDaemon_HTTPServer(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "http_test.sock")
+
+	server := NewServerWithSocket(sockPath)
+	server.SetHTTPPort(18329) // porta temporária
+	go func() { _ = server.Start() }()
+	defer server.Stop()
+
+	// Aguarda HTTP server subir
+	var healthResp *http.Response
+	var err error
+	for i := 0; i < 20; i++ {
+		time.Sleep(30 * time.Millisecond)
+		healthResp, err = http.Get("http://127.0.0.1:18329/health")
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatalf("falha ao conectar no health check HTTP: %v", err)
+	}
+	defer healthResp.Body.Close()
+
+	if healthResp.StatusCode != http.StatusOK {
+		t.Errorf("esperava status 200 no /health, obteve %d", healthResp.StatusCode)
+	}
+	body, _ := io.ReadAll(healthResp.Body)
+	if !strings.Contains(string(body), `"status":"healthy"`) {
+		t.Errorf("resposta inesperada do /health: %s", string(body))
+	}
+
+	// Testa /metrics
+	metricsResp, err := http.Get("http://127.0.0.1:18329/metrics")
+	if err != nil {
+		t.Fatalf("falha ao consultar /metrics: %v", err)
+	}
+	defer metricsResp.Body.Close()
+
+	if metricsResp.StatusCode != http.StatusOK {
+		t.Errorf("esperava status 200 no /metrics, obteve %d", metricsResp.StatusCode)
+	}
+	mBody, _ := io.ReadAll(metricsResp.Body)
+	if !strings.Contains(string(mBody), "agy_cluster_remaining_tokens") {
+		t.Errorf("métricas não contêm agy_cluster_remaining_tokens: %s", string(mBody))
+	}
+}
+
