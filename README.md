@@ -83,6 +83,9 @@ agy-swarm pipeline -auto-merge -test-cmd "go test -race ./..." "Criar middleware
 # Simulação de pipeline sem disparar chamadas ou alterar branches (Dry-Run):
 agy-swarm pipeline -dry-run "Refatorar módulo de autenticação"
 
+# Diagnóstico Pré-Voo do Enxame (Health Check de daemon, git, tmux, cotas e runners):
+agy-swarm doctor
+
 # Orquestração Kanban Swarm (Control Plane do Maestro via DAG de Cartões):
 agy-swarm kanban init "Refatoração do Motor de Renderização"
 agy-swarm kanban add -id CARD-01 -title "Definir Interfaces" -test-cmd "cargo test -p engine-core" "Spec..."
@@ -91,6 +94,8 @@ agy-swarm kanban status          # Tabela visual do quadro
 agy-swarm kanban next            # Identifica próximo cartão elegível no DAG
 agy-swarm kanban step            # Despacha automaticamente o próximo cartão para o enxame
 agy-swarm kanban wave -max-parallel 3 --auto-merge # Executa onda de cartões paralelos independentes
+agy-swarm kanban retry CARD-01   # Reseta cartão com falha para BACKLOG e limpa erros
+agy-swarm kanban export          # Exporta tabela GitHub Flavored Markdown do épico
 agy-swarm kanban set -id CARD-01 -status DONE  # Marca cartão concluído
 
 # Piloto Automático em Ondas Consecutivas até Esgotar Backlog:
@@ -143,7 +148,7 @@ O diretório `quickshell/` contém os componentes QML para integração direta c
 
 ```bash
 make build    # Compila binário otimizado em bin/agy-swarm
-make test     # Executa suíte de testes unitários (124+ testes)
+make test     # Executa suíte de testes unitários (135+ testes)
 make install  # Instala binário em ~/.local/bin/agy-swarm e cria symlink agy-hub
 make clean    # Remove artefatos temporários de compilação
 ```
