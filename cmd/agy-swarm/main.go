@@ -21,6 +21,7 @@ import (
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/notify"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/pipeline"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/quota"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/security"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/tmux"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/worktree"
 )
@@ -41,7 +42,10 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `⚡ AGY-SWARM // Terminal Multi-Agent Orchestrator
 Uso:
   agy-swarm dispatch [flags] ["tarefa/desafio"]
+  agy-swarm kanban <init|status|next|add|set|step|wave> [flags]
+  agy-swarm autopilot [-max-waves 5] [-max-parallel 3] [--auto-merge]
   agy-swarm pipeline [flags] ["tarefa/desafio"]
+  agy-swarm hub [tui|status|daemon|sync|which|exec] [flags]
   agy-swarm [flags] ["tarefa/desafio inicial"]
   agy-swarm stop [--force]
   agy-swarm attach
@@ -74,14 +78,14 @@ func ensureRuntimeDir() (string, error) {
 		baseDir = filepath.Join(os.TempDir(), fmt.Sprintf("agy-swarm-run-%d", os.Getuid()))
 	}
 
-	if err := os.MkdirAll(baseDir, 0700); err != nil {
-		baseDir, err = os.MkdirTemp("", "agy-swarm-*")
+	if err := os.MkdirAll(baseDir, security.RestrictedDirMode); err != nil {
+		baseDir, err = security.CreateRestrictedTempDir("agy-swarm-*")
 		if err != nil {
 			return "", fmt.Errorf("falha ao provisionar diretório de runtime seguro: %w", err)
 		}
 	}
 
-	if err := os.Chmod(baseDir, 0700); err != nil {
+	if err := os.Chmod(baseDir, security.RestrictedDirMode); err != nil {
 		return "", fmt.Errorf("falha ao aplicar permissão 0700 no runtime: %w", err)
 	}
 
@@ -97,24 +101,24 @@ func pidFilePath(session string) (string, error) {
 	return filepath.Join(dir, fmt.Sprintf("%s.pid", session)), nil
 }
 
-// writeSecureFile grava dados de forma atômica e fail-closed com permissão 0600 e O_EXCL contra TOCTOU.
+// writeSecureFile grava dados de forma atômica e fail-closed com permissão 0600 usando internal/security.
 func writeSecureFile(path string, data []byte) error {
-	_ = os.Remove(path) // Remove link ou arquivo pré-existente antes da criação atômica
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return fmt.Errorf("falha ao criar arquivo protegido 0600 (%s): %w", path, err)
-	}
-	defer f.Close()
-
-	if _, err := f.Write(data); err != nil {
-		return fmt.Errorf("falha ao gravar dados em %s: %w", path, err)
-	}
-	return nil
+	_ = os.Remove(path) // Remove link ou arquivo pré-existente antes da criação
+	return security.WriteRestrictedFile(path, data)
 }
 
 func main() {
+	// Suporte a multicall binary: invocado como `agy-hub` (via symlink ou nome de binário)
+	if filepath.Base(os.Args[0]) == "agy-hub" {
+		handleHub(os.Args[1:])
+		return
+	}
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "hub":
+			handleHub(os.Args[2:])
+			return
 		case "pipeline":
 			handlePipeline()
 			return
@@ -141,6 +145,12 @@ func main() {
 			return
 		case "dispatch":
 			handleDispatch()
+			return
+		case "kanban":
+			handleKanban()
+			return
+		case "autopilot":
+			handleAutopilot()
 			return
 		case "help", "-h", "--help":
 			usage()
@@ -247,6 +257,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Erro ao construir layout Tmux: %v\n", err)
 		os.Exit(1)
 	}
+	_ = tmuxDriver.SavePanesToRuntime(runtimeDir)
 
 	// Atualiza status-bar com informações agregadas do cluster
 	if hubClient.IsAvailable() {
@@ -366,7 +377,24 @@ func handleDaemon() {
 	session := *flagSession
 	cwd, _ := os.Getwd()
 
-	var driver multiplexer.Multiplexer = tmux.NewDriver(session, cwd)
+	tmuxDriver := tmux.NewDriver(session, cwd)
+	var driver multiplexer.Multiplexer = tmuxDriver
+
+	// Hidrata o mapa de painéis a partir do runtime protegido ou Tmux ativo
+	runtimeDir, err := ensureRuntimeDir()
+	if err == nil {
+		_ = tmuxDriver.HydratePanesFromRuntime(runtimeDir)
+	}
+
+	// No layout de 3 zonas, monitora e notifica exclusivamente o Maestro (RoleLead / pane0)
+	// evitando colisão de digitação com a execução do pipeline no viewport compartilhado
+	leadRole := config.RoleConfig{Type: config.RoleLead, Name: "Maestro", Project: "swarm-lead"}
+	memClient := memory.NewClient()
+	watcher := memory.NewWatcher(memClient, tmuxDriver, []config.RoleConfig{leadRole})
+	watchCtx, cancelWatch := context.WithCancel(context.Background())
+	defer cancelWatch()
+	watcher.Start(watchCtx)
+	defer watcher.Stop()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -444,6 +472,10 @@ func handleStop() {
 		}
 		vpMatches, _ := filepath.Glob(filepath.Join(dir, "*-viewport.pane"))
 		for _, m := range vpMatches {
+			_ = os.Remove(m)
+		}
+		paneMatches, _ := filepath.Glob(filepath.Join(dir, "*-panes.json"))
+		for _, m := range paneMatches {
 			_ = os.Remove(m)
 		}
 	}
@@ -659,7 +691,12 @@ func handleDispatch() {
 
 	// Fallback se não encontrar o viewport no tmux
 	fmt.Println("ℹ️ Painel Viewport não encontrado no Tmux. Executando pipeline localmente...")
-	os.Args = append([]string{"agy-swarm", "pipeline", "-test-cmd", testCmd}, task)
+	fallbackArgs := []string{"agy-swarm", "pipeline", "-test-cmd", testCmd}
+	if *pAutoMerge {
+		fallbackArgs = append(fallbackArgs, "-auto-merge")
+	}
+	fallbackArgs = append(fallbackArgs, task)
+	os.Args = fallbackArgs
 	handlePipeline()
 }
 

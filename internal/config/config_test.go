@@ -89,6 +89,13 @@ func TestMaestroPromptsAntiCodingGuard(t *testing.T) {
 		t.Errorf("prompt interativo deve instruir o Maestro a usar 'agy-swarm dispatch'")
 	}
 
+	if !strings.Contains(inter, "KANBAN SWARM") {
+		t.Errorf("prompt interativo deve conter instruções de Kanban Swarm")
+	}
+	if !strings.Contains(inter, "agy-swarm kanban") {
+		t.Errorf("prompt interativo deve referenciar comandos 'agy-swarm kanban'")
+	}
+
 	// Prompt inicial com tarefa
 	initP := GenerateInitialMaestroPrompt(roles, "Minha tarefa de teste")
 	if !strings.Contains(initP, "NUNCA EDITA OU CRIA CÓDIGO FONTE DIRETAMENTE") {
@@ -96,6 +103,9 @@ func TestMaestroPromptsAntiCodingGuard(t *testing.T) {
 	}
 	if !strings.Contains(initP, "Minha tarefa de teste") {
 		t.Errorf("prompt inicial deve conter a tarefa do usuário")
+	}
+	if !strings.Contains(initP, "agy-swarm kanban") {
+		t.Errorf("prompt inicial deve referenciar comandos 'agy-swarm kanban'")
 	}
 }
 

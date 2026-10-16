@@ -14,8 +14,8 @@ import (
 
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/agyhub"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/kanban"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/lease"
-	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/memory"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/tmux"
 )
 
@@ -80,13 +80,35 @@ func renderDashboardLoop() {
 
 func renderFrame() {
 	rows, cols := getTerminalSize()
-	var buf bytes.Buffer
-	// Posiciona cursor no início e limpa a tela visível
-	buf.WriteString("\033[H\033[2J")
+	var rawBuf bytes.Buffer
+	renderCompactDashboard(&rawBuf, rows, cols)
 
-	renderCompactDashboard(&buf, rows, cols)
+	var buf bytes.Buffer
+	buf.WriteString("\033[H") // posiciona cursor no topo sem limpar tela
+
+	lines := strings.Split(rawBuf.String(), "\n")
+	for i, line := range lines {
+		if i == len(lines)-1 && line == "" {
+			continue
+		}
+		buf.WriteString(line)
+		buf.WriteString("\033[K\n") // limpa o resto da linha atual
+	}
+	buf.WriteString("\033[J") // limpa da posição atual até o fim do painel
 
 	_, _ = os.Stdout.Write(buf.Bytes())
+}
+
+func renderProgressBar(pct int, width int) string {
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	filled := (pct * width) / 100
+	empty := width - filled
+	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", empty) + "]"
 }
 
 func renderCompactDashboard(w io.Writer, rows, cols int) {
@@ -102,12 +124,37 @@ func renderCompactDashboard(w io.Writer, rows, cols int) {
 	busyCount := 0
 	cooldownCount := 0
 	freeCount := 0
-	var activeLeases []string
+
+	type activeWorker struct {
+		accountID string
+		icon      string
+		roleName  string
+		stage     string
+		elapsed   time.Duration
+	}
+	var activeWorkers []activeWorker
+
+	roleMap := make(map[config.RoleType]config.RoleConfig)
+	for _, r := range config.AllRoles() {
+		roleMap[r.Type] = r
+	}
 
 	for _, s := range snaps {
 		if s.Status == "BUSY" {
 			busyCount++
-			activeLeases = append(activeLeases, fmt.Sprintf("• %s: %s (%s)", s.AccountID, s.CurrentRole, s.CurrentStage))
+			icon := "⚡"
+			roleName := string(s.CurrentRole)
+			if r, ok := roleMap[s.CurrentRole]; ok {
+				icon = r.Icon
+				roleName = r.Name
+			}
+			activeWorkers = append(activeWorkers, activeWorker{
+				accountID: s.AccountID,
+				icon:      icon,
+				roleName:  roleName,
+				stage:     s.CurrentStage,
+				elapsed:   s.Elapsed,
+			})
 		} else if s.Status == "COOLDOWN" {
 			cooldownCount++
 		} else {
@@ -116,78 +163,157 @@ func renderCompactDashboard(w io.Writer, rows, cols int) {
 	}
 
 	sepLen := cols - 1
-	if sepLen > 68 {
-		sepLen = 68
+	if sepLen > 60 {
+		sepLen = 60
 	}
 	if sepLen < 20 {
 		sepLen = 20
 	}
 	sep := strings.Repeat("─", sepLen)
 
-	fmt.Fprintf(w, "⚡ AGY-SWARM // CLUSTER (%d CONTAS)\n", len(snaps))
+	statusIcon := "⚪ INATIVA"
+	if running {
+		statusIcon = "🟢 ATIVA"
+	}
+	fmt.Fprintf(w, "⚡ AGY-SWARM // CLUSTER (%d CONTAS)                  %s\n", len(snaps), statusIcon)
+
 	if hubClient.IsAvailable() {
 		if st, err := hubClient.GetClusterState(); err == nil {
-			fmt.Fprintf(w, "Cota: %dM/%dM (%d%%) │ Reset: %s\n",
-				st.ClusterRemaining/1000000, st.ClusterQuotaTokens/1000000, st.ClusterQuotaPercent, st.ResetCountdown)
+			bar := renderProgressBar(st.ClusterQuotaPercent, 10)
+			fmt.Fprintf(w, "Cota: %s %d%% (%dM/%dM) │ Pool: 🟢 %d  🟡 %d  🔴 %d\n",
+				bar, st.ClusterQuotaPercent, st.ClusterRemaining/1000000, st.ClusterQuotaTokens/1000000,
+				freeCount, busyCount, cooldownCount)
+		} else {
+			fmt.Fprintf(w, "Pool: 🟢 %d Livres │ 🟡 %d Ocupadas │ 🔴 %d Cooldown\n", freeCount, busyCount, cooldownCount)
 		}
 	} else {
-		statusStr := "⚪ INATIVA"
-		if running {
-			statusStr = "🟢 ATIVA"
-		}
-		fmt.Fprintf(w, "Sessão: %s (%s)\n", session, statusStr)
+		fmt.Fprintf(w, "Pool: 🟢 %d Livres │ 🟡 %d Ocupadas │ 🔴 %d Cooldown\n", freeCount, busyCount, cooldownCount)
 	}
-
-	fmt.Fprintf(w, "Pool: 🟢 %d Livres │ 🟡 %d Ocupadas │ 🔴 %d Cooldown\n", freeCount, busyCount, cooldownCount)
 	fmt.Fprintln(w, sep)
 
-	linesUsed := 5
-	if len(activeLeases) > 0 && linesUsed < rows-4 {
-		fmt.Fprintln(w, "⚡ LEASES ATIVOS:")
-		linesUsed++
-		for _, al := range activeLeases {
-			if linesUsed >= rows-4 {
-				break
+	boardPath := kanban.DefaultBoardPath(cwd)
+	if kb, err := kanban.LoadBoard(boardPath); err == nil && len(kb.Cards) > 0 {
+		doneCount := 0
+		activeCount := 0
+		blockedCount := 0
+		var activeCards []kanban.Card
+
+		for _, c := range kb.Cards {
+			switch c.Status {
+			case kanban.StatusDone:
+				doneCount++
+			case kanban.StatusInProgress:
+				activeCount++
+				activeCards = append(activeCards, c)
+			case kanban.StatusBlocked:
+				blockedCount++
 			}
-			fmt.Fprintln(w, al)
-			linesUsed++
+		}
+
+		pct := (doneCount * 100) / len(kb.Cards)
+		bar := renderProgressBar(pct, 10)
+		fmt.Fprintf(w, "📋 ÉPICO: %s\n", kb.Epic)
+		fmt.Fprintf(w, "Progresso: %s %d/%d DONE │ ⚡ %d Ativos │ 🚫 %d Bloq\n", bar, doneCount, len(kb.Cards), activeCount, blockedCount)
+		for _, ac := range activeCards {
+			scopeStr := ""
+			if len(ac.Scope) > 0 {
+				scopeStr = fmt.Sprintf(" [%s]", strings.Join(ac.Scope, ","))
+			}
+			fmt.Fprintf(w, "  ⚡ %s: %s%s\n", ac.ID, ac.Title, scopeStr)
 		}
 		fmt.Fprintln(w, sep)
-		linesUsed++
 	}
 
-	fmt.Fprintln(w, "👥 WORKTREES & BRANCHES:")
-	linesUsed++
-
-	for _, r := range config.AllRoles() {
-		if linesUsed >= rows-1 {
-			break
+	fmt.Fprintln(w, "🔥 LEASES & WORKERS EM EXECUÇÃO:")
+	if len(activeWorkers) == 0 {
+		fmt.Fprintln(w, "  • Nenhum worker em execução no momento.")
+	} else {
+		for _, aw := range activeWorkers {
+			m := int(aw.elapsed.Minutes())
+			s := int(aw.elapsed.Seconds()) % 60
+			fmt.Fprintf(w, "  • %-10s ──> %s %-10s (%-14s)   [%02d:%02ds]\n",
+				aw.accountID, aw.icon, aw.roleName, aw.stage, m, s)
 		}
-		branchName := "main"
-		diffSummary := "limpo"
+	}
+	fmt.Fprintln(w, sep)
 
-		if r.Type != config.RoleLead {
-			branchName = fmt.Sprintf("swarm/%s", r.Type)
-			checkCmd := exec.Command("git", "rev-parse", "--verify", branchName)
-			checkCmd.Dir = cwd
-			if err := checkCmd.Run(); err != nil {
+	fmt.Fprintln(w, " Alt+k: Kanban │ Alt+d: Diffs │ Alt+w: Wave Grid │ Mouse: ON")
+}
+
+type branchDisplayInfo struct {
+	Icon        string
+	Name        string
+	Project     string
+	BranchName  string
+	DiffSummary string
+}
+
+func getBranchesDisplayInfo(cwd string) []branchDisplayInfo {
+	roles := config.AllRoles()
+	roleMap := make(map[config.RoleType]config.RoleConfig)
+	for _, r := range roles {
+		roleMap[r.Type] = r
+	}
+
+	var list []branchDisplayInfo
+
+	// 1. Maestro (HEAD principal)
+	leadRole := roleMap[config.RoleLead]
+	mainBranch := "main"
+	if out, err := exec.Command("git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD").Output(); err == nil {
+		if b := strings.TrimSpace(string(out)); b != "" && b != "HEAD" {
+			mainBranch = b
+		}
+	}
+	list = append(list, branchDisplayInfo{
+		Icon:        leadRole.Icon,
+		Name:        leadRole.Name,
+		Project:     leadRole.Project,
+		BranchName:  mainBranch,
+		DiffSummary: "limpo",
+	})
+
+	// 2. Branches sob refs/heads/swarm/ (dinâmicos: tanto swarm/<role> quanto swarm/<card-id>/<role>)
+	branchOut, err := exec.Command("git", "-C", cwd, "for-each-ref", "--format=%(refname:short)", "refs/heads/swarm/").Output()
+	if err == nil {
+		for _, b := range strings.Split(strings.TrimSpace(string(branchOut)), "\n") {
+			b = strings.TrimSpace(b)
+			if b == "" {
 				continue
 			}
 
-			cCmd := exec.Command("git", "rev-list", "--count", "HEAD.."+branchName)
-			cCmd.Dir = cwd
+			parts := strings.Split(b, "/")
+			roleKey := config.RoleType(parts[len(parts)-1])
+			r, ok := roleMap[roleKey]
+			icon := "🌿"
+			name := b
+			project := b
+			if ok {
+				icon = r.Icon
+				name = r.Name
+				project = r.Project
+			}
+
+			diffSummary := "limpo"
+			cCmd := exec.Command("git", "-C", cwd, "rev-list", "--count", "HEAD.."+b)
 			if out, err := cCmd.Output(); err == nil {
 				ahead := strings.TrimSpace(string(out))
 				if ahead != "" && ahead != "0" {
-					branchName = fmt.Sprintf("%s (+%s)", branchName, ahead)
 					diffSummary = fmt.Sprintf("+%sc", ahead)
 				}
 			}
-		}
 
-		fmt.Fprintf(w, "%s %-10s: %-16s (%s)\n", r.Icon, r.Name, branchName, diffSummary)
-		linesUsed++
+			list = append(list, branchDisplayInfo{
+				Icon:        icon,
+				Name:        name,
+				Project:     project,
+				BranchName:  b,
+				DiffSummary: diffSummary,
+			})
+		}
 	}
+
+	return list
 }
 
 
@@ -252,39 +378,18 @@ func renderDashboardOnce() {
 
 	// 2. Estado dos Branches dos Especialistas
 	fmt.Println("\n👥 WORKTREES & BRANCHES GIT:")
-	fmt.Printf("%-18s %-14s %-20s %-12s\n", "PAPEL", "ai-memory", "BRANCH GIT", "DIFF STAT")
-	fmt.Println(strings.Repeat("─", 68))
+	fmt.Printf("%-18s %-14s %-24s %-12s\n", "PAPEL", "ai-memory", "BRANCH GIT", "DIFF STAT")
+	fmt.Println(strings.Repeat("─", 72))
 
-	memClient := memory.NewClient()
-	for _, r := range config.AllRoles() {
-		branchName := "main"
-		diffSummary := "limpo"
-
-		if r.Type != config.RoleLead {
-			branchName = fmt.Sprintf("swarm/%s", r.Type)
-			// Só exibe se o branch existir no repositório
-			checkCmd := exec.Command("git", "rev-parse", "--verify", branchName)
-			checkCmd.Dir = cwd
-			if err := checkCmd.Run(); err != nil {
-				continue
-			}
-
-			cCmd := exec.Command("git", "rev-list", "--count", "HEAD.."+branchName)
-			cCmd.Dir = cwd
-			if out, err := cCmd.Output(); err == nil {
-				ahead := strings.TrimSpace(string(out))
-				if ahead != "" && ahead != "0" {
-					branchName = fmt.Sprintf("%s (+%s)", branchName, ahead)
-					diffSummary = fmt.Sprintf("+%s commit(s)", ahead)
-				}
-			}
+	for _, bInfo := range getBranchesDisplayInfo(cwd) {
+		displayName := bInfo.BranchName
+		statText := bInfo.DiffSummary
+		if statText != "limpo" {
+			statText = fmt.Sprintf("%s commit(s)", strings.TrimSuffix(statText, "c"))
 		}
-
-		fmt.Printf("%s %-15s %-14s %-20s %-12s\n",
-			r.Icon, r.Name, r.Project, branchName, diffSummary)
+		fmt.Printf("%s %-15s %-14s %-24s %-12s\n",
+			bInfo.Icon, bInfo.Name, bInfo.Project, displayName, statText)
 	}
-
-	_ = memClient
 	fmt.Println()
 	fmt.Println("Controles Rápidos:")
 	fmt.Println("  agy-swarm attach      - Conectar ao terminal do enxame")
