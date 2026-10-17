@@ -75,10 +75,23 @@ func NewPipelineEngine(cfg EngineConfig, broker *lease.Broker, runner ProcessRun
 	merger := worktree.NewMerger(cfg.RepoRoot)
 	builder := NewPromptBuilder(cfg.Task)
 
-	// Injeta CARGO_TARGET_DIR compartilhado para projetos Rust se não estiver definido
+	// Injeta CARGO_TARGET_DIR no runner isolado para projetos Rust evitando mutação concorrente de os.Setenv global
 	if _, err := os.Stat(filepath.Join(cfg.RepoRoot, "Cargo.toml")); err == nil {
-		if os.Getenv("CARGO_TARGET_DIR") == "" {
-			_ = os.Setenv("CARGO_TARGET_DIR", filepath.Join(cfg.RepoRoot, "target"))
+		targetDir := os.Getenv("CARGO_TARGET_DIR")
+		if targetDir == "" {
+			targetDir = filepath.Join(cfg.RepoRoot, "target")
+		}
+		if osRunner, ok := dispatcher.Runner.(*OSProcessRunner); ok {
+			hasCargo := false
+			for _, envItem := range osRunner.Env {
+				if strings.HasPrefix(envItem, "CARGO_TARGET_DIR=") {
+					hasCargo = true
+					break
+				}
+			}
+			if !hasCargo {
+				osRunner.Env = append(osRunner.Env, fmt.Sprintf("CARGO_TARGET_DIR=%s", targetDir))
+			}
 		}
 	}
 

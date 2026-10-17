@@ -72,3 +72,36 @@ func TestParsePlanJSON_InvalidOrEmpty(t *testing.T) {
 		t.Fatal("esperava erro ao parsear texto sem JSON estruturado")
 	}
 }
+
+func TestParsePlanJSON_MultipleJSONBlocks(t *testing.T) {
+	raw := `Exemplo de schema que não deve corromper o parsing:
+{
+  "epic": "Exemplo",
+  "cards": [
+    { "id": "SAMPLE-01", "invalid": true }
+  ]
+}
+
+Aqui está o plano real para execução:
+` + "```json\n" + `{
+  "epic": "Plano Real",
+  "cards": [
+    {
+      "id": "CARD-01",
+      "title": "Core Engine",
+      "spec": "Implementar loop principal",
+      "scope": ["internal/engine"]
+    }
+  ]
+}
+` + "```\nFim da decomposição."
+
+	plan, err := parsePlanJSON(raw)
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if len(plan.Cards) != 1 || plan.Cards[0].ID != "CARD-01" {
+		t.Fatalf("falha ao selecionar o bloco JSON real: %+v", plan)
+	}
+}
+

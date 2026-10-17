@@ -24,6 +24,7 @@ type ProcessRunner interface {
 // OSProcessRunner implementa ProcessRunner com controle estrito de processo via killpg.
 type OSProcessRunner struct {
 	LogWriter io.Writer
+	Env       []string
 }
 
 // NewOSProcessRunner cria uma nova instância de OSProcessRunner.
@@ -52,6 +53,9 @@ func (r *OSProcessRunner) RunEphemeral(ctx context.Context, workdir string, acco
 	cmd := exec.CommandContext(execCtx, "agy-profile", accountID, "--dangerously-skip-permissions", "-p", string(promptBytes))
 	cmd.Dir = workdir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if len(r.Env) > 0 {
+		cmd.Env = append(os.Environ(), r.Env...)
+	}
 
 	var outputBuf bytes.Buffer
 	var stdoutWriter io.Writer = &outputBuf
@@ -105,6 +109,9 @@ func (r *OSProcessRunner) RunCommand(ctx context.Context, workdir string, comman
 	cmd := exec.CommandContext(execCtx, "sh", "-c", commandLine)
 	cmd.Dir = workdir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if len(r.Env) > 0 {
+		cmd.Env = append(os.Environ(), r.Env...)
+	}
 
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf

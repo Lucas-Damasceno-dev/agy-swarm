@@ -367,7 +367,7 @@ func handleKanban() {
 
 		commitHash := targetCard.MergeCommit
 		if commitHash == "" {
-			logOut, err := exec.Command("git", "-C", cwd, "log", fmt.Sprintf("--grep=%s", targetCard.ID), "-n", "1", "--format=%%H").Output()
+			logOut, err := exec.Command("git", "-C", cwd, "log", fmt.Sprintf("--grep=%s", targetCard.ID), "-n", "1", "--format=%H").Output()
 			if err == nil {
 				commitHash = strings.TrimSpace(string(logOut))
 			}
@@ -570,18 +570,58 @@ type PlanOutput struct {
 }
 
 func parsePlanJSON(rawOutput string) (*PlanOutput, error) {
-	jsonRegex := regexp.MustCompile(`(?s)\{\s*".*"\s*:\s*.*"cards".*\}`)
-	match := jsonRegex.FindString(rawOutput)
-	if match != "" {
+	// 1. Tenta extrair de blocos Markdown ```json ... ``` (do último para o primeiro)
+	fenceRegex := regexp.MustCompile("(?s)```(?:json)?\\s*([{\\[].*?[}\\]])\\s*```")
+	if matches := fenceRegex.FindAllStringSubmatch(rawOutput, -1); len(matches) > 0 {
+		for i := len(matches) - 1; i >= 0; i-- {
+			snippet := strings.TrimSpace(matches[i][1])
+			if strings.HasPrefix(snippet, "{") {
+				var plan PlanOutput
+				if err := json.Unmarshal([]byte(snippet), &plan); err == nil && len(plan.Cards) > 0 {
+					return &plan, nil
+				}
+			} else if strings.HasPrefix(snippet, "[") {
+				var cards []kanban.Card
+				if err := json.Unmarshal([]byte(snippet), &cards); err == nil && len(cards) > 0 {
+					return &PlanOutput{Cards: cards}, nil
+				}
+			}
+		}
+	}
+
+	// 2. Extração de objeto com campo "cards" sem ganância
+	objRegex := regexp.MustCompile(`(?s)\{\s*"[^"]*"\s*:\s*.*?\[\s*\{.*?\}\s*\].*?\}`)
+	if matches := objRegex.FindAllString(rawOutput, -1); len(matches) > 0 {
+		for i := len(matches) - 1; i >= 0; i-- {
+			var plan PlanOutput
+			if err := json.Unmarshal([]byte(matches[i]), &plan); err == nil && len(plan.Cards) > 0 {
+				return &plan, nil
+			}
+		}
+	}
+
+	// 3. Extração de array de cartões sem ganância
+	arrayRegex := regexp.MustCompile(`(?s)\[\s*\{.*?\}\s*\]`)
+	if matches := arrayRegex.FindAllString(rawOutput, -1); len(matches) > 0 {
+		for i := len(matches) - 1; i >= 0; i-- {
+			var cards []kanban.Card
+			if err := json.Unmarshal([]byte(matches[i]), &cards); err == nil && len(cards) > 0 {
+				return &PlanOutput{Cards: cards}, nil
+			}
+		}
+	}
+
+	// 4. Fallback ganancioso amplo para JSONs com múltiplos cartões
+	broadObjRegex := regexp.MustCompile(`(?s)\{\s*[\s\S]*"cards"[\s\S]*\}`)
+	if match := broadObjRegex.FindString(rawOutput); match != "" {
 		var plan PlanOutput
 		if err := json.Unmarshal([]byte(match), &plan); err == nil && len(plan.Cards) > 0 {
 			return &plan, nil
 		}
 	}
 
-	arrayRegex := regexp.MustCompile(`(?s)\[\s*\{.*\}\s*\]`)
-	arrMatch := arrayRegex.FindString(rawOutput)
-	if arrMatch != "" {
+	broadArrRegex := regexp.MustCompile(`(?s)\[\s*\{[\s\S]*\}\s*\]`)
+	if arrMatch := broadArrRegex.FindString(rawOutput); arrMatch != "" {
 		var cards []kanban.Card
 		if err := json.Unmarshal([]byte(arrMatch), &cards); err == nil && len(cards) > 0 {
 			return &PlanOutput{Cards: cards}, nil

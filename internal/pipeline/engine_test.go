@@ -211,11 +211,22 @@ func TestCargoTargetDirInjection(t *testing.T) {
 		Task:     "test rust",
 	}
 
-	_ = NewPipelineEngine(cfg, broker, nil)
+	engine := NewPipelineEngine(cfg, broker, nil)
 
 	expectedTarget := filepath.Join(tmpDir, "target")
-	if got := os.Getenv("CARGO_TARGET_DIR"); got != expectedTarget {
-		t.Errorf("CARGO_TARGET_DIR não foi injetado corretamente: esperado %s, obtido %s", expectedTarget, got)
+	osRunner, ok := engine.dispatcher.Runner.(*OSProcessRunner)
+	if !ok {
+		t.Fatalf("esperava OSProcessRunner no dispatcher")
+	}
+	found := false
+	for _, envItem := range osRunner.Env {
+		if envItem == fmt.Sprintf("CARGO_TARGET_DIR=%s", expectedTarget) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("CARGO_TARGET_DIR não foi injetado no OSProcessRunner: esperado %s, obtido %v", expectedTarget, osRunner.Env)
 	}
 }
 
