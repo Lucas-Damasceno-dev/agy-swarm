@@ -17,6 +17,7 @@ import (
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/collector"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/daemon"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/discovery"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/metrics"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/model"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/orchestrator"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/syncer"
@@ -63,6 +64,9 @@ func handleHub(args []string) {
 
 	case "reset-cooldown", "unquarantine":
 		runResetCooldown(args[1:])
+
+	case "leaderboard", "rank", "stats":
+		runLeaderboard(args[1:])
 
 	case "env":
 		runEnv(args[1:])
@@ -709,6 +713,43 @@ func execDefault(args []string) {
 	_ = syscall.Exec(agyProfileBin, fullArgs, os.Environ())
 }
 
+func runLeaderboard(args []string) {
+	store, err := metrics.NewStore()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Erro ao abrir banco de métricas: %v\n", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	entries, err := store.GetLeaderboard()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Erro ao consultar ranking: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("ℹ️ Nenhuma execução registrada no histórico até o momento.")
+		return
+	}
+
+	fmt.Println("🏆 AGY-HUB // LEADERBOARD DE CONTAS E AGENTES")
+	fmt.Println(strings.Repeat("─", 78))
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "POS\tCONTA\tRUNS\tVITÓRIAS\tWIN RATE\tDURAÇÃO MÉD\tDIFF TOTAL")
+	fmt.Fprintln(w, "---\t-----\t----\t--------\t--------\t-----------\t----------")
+	for i, e := range entries {
+		medals := []string{"🥇", "🥈", "🥉"}
+		pos := fmt.Sprintf("#%d", i+1)
+		if i < len(medals) {
+			pos = medals[i]
+		}
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%.1f%%\t%dms\t+%dB\n",
+			pos, e.ProfileID, e.TotalRuns, e.Wins, e.WinRate, e.AvgDurationMs, e.TotalDiffBytes)
+	}
+	_ = w.Flush()
+	fmt.Println(strings.Repeat("─", 78))
+}
+
 func printHelp() {
 	fmt.Println(`⚡ AGY-HUB // Antigravity & Hermes Multi-Account Orchestrator
 
@@ -716,10 +757,11 @@ COMANDOS:
   agy-hub                    Inicia o painel TUI interativo (default)
   agy-hub tui                Inicia o painel TUI interativo
   agy-hub daemon             Inicia daemon residente via Unix Socket (/tmp/agy-hub.sock)
-  agy-hub status [--bar]     Exibe tabela com status das 5 contas e proxy (--bar para Waybar/Tmux)
+  agy-hub status [--bar]     Exibe tabela com status das contas e proxy (--bar para Waybar/Tmux)
+  agy-hub leaderboard        Exibe ranking de vitórias e acurácia por conta
   agy-hub which              Mostra qual conta seria selecionada pelo orquestrador agora (com afinidade KV)
   agy-hub exec <prompt>      Orquestra e despacha tarefa com failover em voo
-  agy-hub sync               Sincroniza tokens das 5 contas para o CLI-Proxy/Hermes
+  agy-hub sync               Sincroniza tokens das contas para o CLI-Proxy/Hermes
   agy-hub install-systemd    Gera timer systemd para sincronização periódica
   agy-hub install-daemon-systemd Gera serviço systemd para daemon em background
 
@@ -735,8 +777,9 @@ TECLAS NA TUI:
   [d]                        Dispatch de prompt com orquestrador automático
   [l]                        Live Log Viewer (streaming do cli.log com destaque de 429)
   [L]                        Dispara login OAuth interativo para a conta selecionada
-  [s]                        Sincroniza as 5 contas no CLI-Proxy
+  [s]                        Sincroniza as contas no CLI-Proxy
   [p]                        Reinicia o serviço cli-proxy-api
   [r]                        Atualiza métricas imediatamente
   [q]                        Sair`)
 }
+

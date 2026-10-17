@@ -106,3 +106,50 @@ func TestMetrics_ConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestMetrics_RecordExecutionAndLeaderboard(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "leaderboard_test.db")
+
+	store, err := NewStoreWithPath(dbPath)
+	if err != nil {
+		t.Fatalf("falha ao criar store: %v", err)
+	}
+	defer store.Close()
+
+	// Account 1: 2 vitórias, 1 falha
+	_ = store.RecordExecution("account1", "CARD-01", "Dev1", "Implementar Auth", "WINNER", 1200, 450, "")
+	_ = store.RecordExecution("account1", "CARD-02", "Dev1", "Cache Redis", "WINNER", 800, 200, "")
+	_ = store.RecordExecution("account1", "CARD-03", "Dev1", "Refactor Logs", "FAILED", 500, 0, "syntax error")
+
+	// Account 2: 1 vitória
+	_ = store.RecordExecution("account2", "CARD-01", "Dev2", "Implementar Auth", "REJECTED", 1500, 300, "")
+	_ = store.RecordExecution("account2", "CARD-03", "Dev2", "Refactor Logs", "WINNER", 1000, 150, "")
+
+	board, err := store.GetLeaderboard()
+	if err != nil {
+		t.Fatalf("erro ao consultar leaderboard: %v", err)
+	}
+	if len(board) != 2 {
+		t.Fatalf("esperava 2 contas no leaderboard, obteve %d", len(board))
+	}
+
+	// Primeiro lugar deve ser account1 (2 vitórias)
+	if board[0].ProfileID != "account1" {
+		t.Errorf("esperava account1 em primeiro, obteve %s", board[0].ProfileID)
+	}
+	if board[0].Wins != 2 || board[0].TotalRuns != 3 {
+		t.Errorf("métricas incorretas para account1: %+v", board[0])
+	}
+	if board[0].WinRate < 66.0 || board[0].WinRate > 67.0 {
+		t.Errorf("winrate incorreta para account1: %f", board[0].WinRate)
+	}
+	if board[0].TotalDiffBytes != 650 {
+		t.Errorf("total diff bytes incorreto para account1: %d", board[0].TotalDiffBytes)
+	}
+
+	// Segundo lugar: account2 (1 vitória, 2 runs)
+	if board[1].ProfileID != "account2" || board[1].Wins != 1 {
+		t.Errorf("métricas incorretas para account2: %+v", board[1])
+	}
+}
