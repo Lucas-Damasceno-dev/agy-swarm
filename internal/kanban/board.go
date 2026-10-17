@@ -172,11 +172,40 @@ func CleanScope(s string) string {
 	return strings.Trim(s, "/")
 }
 
+var criticalRootConfigs = map[string]bool{
+	"go.mod":            true,
+	"go.sum":            true,
+	"cargo.toml":        true,
+	"cargo.lock":        true,
+	"package.json":      true,
+	"package-lock.json": true,
+	"pnpm-lock.yaml":    true,
+	"flake.nix":         true,
+	"flake.lock":        true,
+	"makefile":          true,
+	"pyproject.toml":    true,
+	"poetry.lock":       true,
+}
+
+func touchesCriticalRootConfig(scopes []string) bool {
+	for _, s := range scopes {
+		base := strings.ToLower(filepath.Base(CleanScope(s)))
+		if criticalRootConfigs[base] {
+			return true
+		}
+	}
+	return false
+}
+
 // ScopesOverlap avalia colisão entre escopos de dois cartões.
 // Se qualquer escopo for raiz (".", "" ou "*"), colide com tudo.
+// Também impede paralelismo se ambos os cartões tocarem arquivos de manifesto/lockfile raiz (RootConfigGuard).
 func ScopesOverlap(a, b []string) bool {
 	if len(a) == 0 || len(b) == 0 {
 		return false
+	}
+	if touchesCriticalRootConfig(a) && touchesCriticalRootConfig(b) {
+		return true
 	}
 	for _, rawA := range a {
 		ca := CleanScope(rawA)

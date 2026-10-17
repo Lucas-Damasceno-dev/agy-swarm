@@ -188,3 +188,27 @@ func TestKanbanRetryAndExport(t *testing.T) {
 	}
 }
 
+func TestRootConfigGuardInWave(t *testing.T) {
+	b := NewBoard("Root Config Collision")
+	// CARD-01 altera auth e go.mod
+	_ = b.AddCard(Card{ID: "CARD-01", Title: "Auth Dep", Scope: []string{"internal/auth", "go.mod"}})
+	// CARD-02 altera billing e go.sum
+	_ = b.AddCard(Card{ID: "CARD-02", Title: "Billing Dep", Scope: []string{"internal/billing", "go.sum"}})
+	// CARD-03 altera docs sem mexer em manifesto de raiz
+	_ = b.AddCard(Card{ID: "CARD-03", Title: "Docs Update", Scope: []string{"docs/"}})
+
+	// ScopesOverlap direto
+	if !ScopesOverlap([]string{"internal/auth", "go.mod"}, []string{"internal/billing", "go.sum"}) {
+		t.Error("esperava colisão via RootConfigGuard para go.mod e go.sum")
+	}
+
+	wave := b.NextEligibleWave()
+	if len(wave) != 2 {
+		t.Fatalf("esperava 2 cartões na onda (CARD-01 e CARD-03), obteve %d", len(wave))
+	}
+	if wave[0].ID != "CARD-01" || wave[1].ID != "CARD-03" {
+		t.Errorf("cartões com lockfiles concorrentes entraram na mesma onda: %+v", wave)
+	}
+}
+
+
