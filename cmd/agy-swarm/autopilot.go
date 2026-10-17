@@ -228,17 +228,41 @@ Se não encontrar problemas graves, retorne apenas [].`, roleCfg.Name, roleCfg.T
 }
 
 func parseAuditJSON(rawOutput, role string) []AuditIssue {
-	jsonRegex := regexp.MustCompile(`(?s)\[\s*\{.*\}\s*\]`)
-	match := jsonRegex.FindString(rawOutput)
-	if match == "" {
-		return nil
+	// 1. Tenta extrair array de blocos markdown ```json ... ``` (do último para o primeiro)
+	fenceRegex := regexp.MustCompile("(?s)```(?:json)?\\s*(\\[.*?\\])\\s*```")
+	if matches := fenceRegex.FindAllStringSubmatch(rawOutput, -1); len(matches) > 0 {
+		for i := len(matches) - 1; i >= 0; i-- {
+			var issues []AuditIssue
+			if err := json.Unmarshal([]byte(matches[i][1]), &issues); err == nil && len(issues) > 0 {
+				return normalizeAuditIssues(issues, role)
+			}
+		}
 	}
 
-	var issues []AuditIssue
-	if err := json.Unmarshal([]byte(match), &issues); err != nil {
-		return nil
+	// 2. Tenta extrair arrays JSON sem ganância
+	arrayRegex := regexp.MustCompile(`(?s)\[\s*\{.*?\}\s*\]`)
+	matches := arrayRegex.FindAllString(rawOutput, -1)
+	for i := len(matches) - 1; i >= 0; i-- {
+		var issues []AuditIssue
+		if err := json.Unmarshal([]byte(matches[i]), &issues); err == nil && len(issues) > 0 {
+			return normalizeAuditIssues(issues, role)
+		}
 	}
 
+	// 3. Fallback abrangente
+	broadRegex := regexp.MustCompile(`(?s)\[\s*\{[\s\S]*\}\s*\]`)
+	match := broadRegex.FindString(rawOutput)
+	if match != "" {
+		var issues []AuditIssue
+		if err := json.Unmarshal([]byte(match), &issues); err == nil {
+			return normalizeAuditIssues(issues, role)
+		}
+	}
+
+	return nil
+}
+
+func normalizeAuditIssues(issues []AuditIssue, role string) []AuditIssue {
 	for i := range issues {
 		issues[i].Role = role
 		issues[i].Title = strings.TrimSpace(issues[i].Title)
@@ -248,7 +272,6 @@ func parseAuditJSON(rawOutput, role string) []AuditIssue {
 			issues[i].Severity = "MED"
 		}
 	}
-
 	return issues
 }
 

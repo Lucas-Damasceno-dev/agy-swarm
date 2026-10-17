@@ -31,6 +31,35 @@ Fim da execução.`
 	}
 }
 
+func TestParseAuditJSON_MultipleJSONBlocks(t *testing.T) {
+	raw := `Exemplo de schema que não deve corromper o parsing:
+[
+  { "title": "exemplo falso", "invalid_field": 123 }
+]
+
+Aqui está o relatório real:
+` + "```json\n" + `[
+  {
+    "title": "Vazamento de descritores no daemon",
+    "scope": ["internal/hub/daemon"],
+    "spec": "Fechar conn de socket nos handlers de erro",
+    "severity": "CRITICAL"
+  }
+]
+` + "```\nFim do relatório."
+
+	issues := parseAuditJSON(raw, "sec")
+	if len(issues) != 1 {
+		t.Fatalf("esperava 1 issue extraída do bloco markdown correto, obteve %d", len(issues))
+	}
+	if issues[0].Title != "Vazamento de descritores no daemon" {
+		t.Errorf("título incorreto: %q", issues[0].Title)
+	}
+	if issues[0].Severity != "CRITICAL" {
+		t.Errorf("severidade incorreta: %q", issues[0].Severity)
+	}
+}
+
 func TestConsolidateIssuesToCards_VetoAndScopeFallback(t *testing.T) {
 	board := kanban.NewBoard("Teste Autopilot")
 	_ = board.AddCard(kanban.Card{
