@@ -16,6 +16,7 @@ import (
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/kanban"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/lease"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/notify"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/pipeline"
 )
 
@@ -127,6 +128,7 @@ func handleAutopilot() {
 			if sterileCycles >= 2 {
 				fmt.Println("🛑 Circuit Breaker: 2 ondas consecutivas sem alterações integradas no branch principal.")
 				fmt.Println("Interrompendo autopilot para proteger cotas e evitar doom-loops.")
+				notify.SendDesktop("AGY-SWARM Autopilot", "Circuit Breaker acionado: 2 ciclos sem alterações integradas.")
 				return
 			}
 		} else {
@@ -140,6 +142,7 @@ func handleAutopilot() {
 
 		if completed == 0 && blocked == 0 {
 			fmt.Println("ℹ️ Nenhum cartão restante para execução.")
+			notify.SendDesktop("AGY-SWARM Autopilot", "Épico concluído! Todos os cartões foram processados.")
 			return
 		}
 
@@ -147,6 +150,7 @@ func handleAutopilot() {
 	}
 
 	fmt.Printf("\n🏁 Teto de %d ciclos atingido no Autopilot.\n", *pMaxWaves)
+	notify.SendDesktop("AGY-SWARM Autopilot", fmt.Sprintf("Autopilot finalizou após %d ciclos de ondas.", *pMaxWaves))
 }
 
 func runAuditMap(cwd string, testCmd string) ([]AuditIssue, error) {
