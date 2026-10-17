@@ -48,3 +48,13 @@ func TestMergeBranch_Nonexistent(t *testing.T) {
 	}
 }
 
+func TestRollbackCommit_EmptyAndNonexistent(t *testing.T) {
+	m := NewMerger(t.TempDir())
+	if err := m.RollbackCommit(nil, "", "motivo"); err == nil {
+		t.Errorf("esperava erro para hash vazio")
+	}
+	if err := m.RollbackCommit(nil, "deadbeef1234", "motivo"); err == nil {
+		t.Errorf("esperava erro para commit inexistente em repo vazio")
+	}
+}
+

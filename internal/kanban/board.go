@@ -29,10 +29,11 @@ type Card struct {
 	DependsOn []string   `json:"depends_on,omitempty"`
 	Scope     []string   `json:"scope,omitempty"`
 	TestCmd   string     `json:"test_cmd,omitempty"`
-	Spec      string     `json:"spec"`
-	Winner    string     `json:"winner,omitempty"`
-	Error     string     `json:"error,omitempty"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	Spec        string     `json:"spec"`
+	Winner      string     `json:"winner,omitempty"`
+	MergeCommit string     `json:"merge_commit,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 // Board mantém a especificação do épico e o grafo de cartões em execução.
@@ -126,6 +127,38 @@ func (b *Board) UpdateCardStatus(id string, status CardStatus, winner string, er
 			} else if status == StatusDone {
 				b.Cards[i].Error = ""
 			}
+			b.Cards[i].UpdatedAt = time.Now().UTC()
+			return nil
+		}
+	}
+	return fmt.Errorf("cartão %q não encontrado", id)
+}
+
+// SetMergeCommit anota o commit hash do merge integrado para auditoria e rollback.
+func (b *Board) SetMergeCommit(id string, commitHash string) error {
+	id = strings.TrimSpace(id)
+	for i := range b.Cards {
+		if strings.EqualFold(b.Cards[i].ID, id) {
+			b.Cards[i].MergeCommit = strings.TrimSpace(commitHash)
+			b.Cards[i].UpdatedAt = time.Now().UTC()
+			return nil
+		}
+	}
+	return fmt.Errorf("cartão %q não encontrado", id)
+}
+
+// MarkRolledBack reverte o estado do cartão para BLOCKED (ou BACKLOG), limpa o vencedor e anota o motivo.
+func (b *Board) MarkRolledBack(id string, toBacklog bool, reason string) error {
+	id = strings.TrimSpace(id)
+	for i := range b.Cards {
+		if strings.EqualFold(b.Cards[i].ID, id) {
+			if toBacklog {
+				b.Cards[i].Status = StatusBacklog
+			} else {
+				b.Cards[i].Status = StatusBlocked
+			}
+			b.Cards[i].Winner = ""
+			b.Cards[i].Error = fmt.Sprintf("ROLLBACK: %s", strings.TrimSpace(reason))
 			b.Cards[i].UpdatedAt = time.Now().UTC()
 			return nil
 		}
@@ -384,6 +417,73 @@ func (b *Board) ExportMarkdown() string {
 		}
 		sb.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s | %s |\n", c.ID, statusBadge, deps, c.Title, detail))
 	}
+	return sb.String()
+}
+
+// GenerateChangelogReport produz um relatório executivo em Markdown com sumário de release,
+// cartões concluídos, decisões arquiteturais consolidadas e métricas da execução.
+func (b *Board) GenerateChangelogReport() string {
+	var sb strings.Builder
+	doneCards := make([]Card, 0)
+	failedCards := make([]Card, 0)
+	backlogCards := make([]Card, 0)
+
+	for _, c := range b.Cards {
+		switch c.Status {
+		case StatusDone:
+			doneCards = append(doneCards, c)
+		case StatusBlocked, StatusFailed:
+			failedCards = append(failedCards, c)
+		default:
+			backlogCards = append(backlogCards, c)
+		}
+	}
+
+	total := len(b.Cards)
+	pct := 0
+	if total > 0 {
+		pct = (len(doneCards) * 100) / total
+	}
+
+	sb.WriteString(fmt.Sprintf("# 🚀 Release & Execution Report: %s\n\n", b.Epic))
+	sb.WriteString(fmt.Sprintf("> Gerado automaticamente pelo AGY-SWARM Orchestrator em %s\n\n", time.Now().Format("2006-01-02 15:04:05")))
+
+	sb.WriteString("## 📊 Sumário Executivo\n\n")
+	sb.WriteString(fmt.Sprintf("- **Total de Cartões no Épico:** %d\n", total))
+	sb.WriteString(fmt.Sprintf("- **Concluídos com Sucesso (Quality Gate Aprovado):** %d (%d%%)\n", len(doneCards), pct))
+	sb.WriteString(fmt.Sprintf("- **Bloqueados / Requerem Atenção:** %d\n", len(failedCards)))
+	sb.WriteString(fmt.Sprintf("- **Pendentes no Backlog:** %d\n\n", len(backlogCards)))
+
+	sb.WriteString("## 🏆 Entregas Concluídas (Changelog)\n\n")
+	if len(doneCards) == 0 {
+		sb.WriteString("_Nenhuma entrega finalizada até o momento._\n\n")
+	} else {
+		for _, c := range doneCards {
+			sb.WriteString(fmt.Sprintf("### `[%s]` %s\n", c.ID, c.Title))
+			if c.Winner != "" {
+				sb.WriteString(fmt.Sprintf("- **Vencedor Integrado:** `%s`\n", c.Winner))
+			}
+			if len(c.Scope) > 0 {
+				sb.WriteString(fmt.Sprintf("- **Escopo/Módulos Afetados:** `%s`\n", strings.Join(c.Scope, "`, `")))
+			}
+			if c.TestCmd != "" {
+				sb.WriteString(fmt.Sprintf("- **Quality Gate:** `%s`\n", c.TestCmd))
+			}
+			if c.Spec != "" {
+				sb.WriteString(fmt.Sprintf("- **Especificação:**\n  > %s\n", strings.ReplaceAll(c.Spec, "\n", "\n  > ")))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	if len(failedCards) > 0 {
+		sb.WriteString("## ⚠️ Itens Bloqueados ou com Falha\n\n")
+		for _, c := range failedCards {
+			sb.WriteString(fmt.Sprintf("- **`[%s]` %s**: %s\n", c.ID, c.Title, c.Error))
+		}
+		sb.WriteString("\n")
+	}
+
 	return sb.String()
 }
 

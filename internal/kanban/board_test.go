@@ -186,6 +186,15 @@ func TestKanbanRetryAndExport(t *testing.T) {
 	if err := b.RetryCard("CARD-999"); err == nil {
 		t.Error("esperava erro ao tentar retry em cartão inexistente")
 	}
+
+	// Testa GenerateChangelogReport
+	report := b.GenerateChangelogReport()
+	if !strings.Contains(report, "# 🚀 Release & Execution Report") {
+		t.Errorf("esperava título no relatório executivo: %s", report)
+	}
+	if !strings.Contains(report, "### `[CARD-01]` Setup") {
+		t.Errorf("esperava CARD-01 no changelog: %s", report)
+	}
 }
 
 func TestRootConfigGuardInWave(t *testing.T) {
@@ -208,6 +217,40 @@ func TestRootConfigGuardInWave(t *testing.T) {
 	}
 	if wave[0].ID != "CARD-01" || wave[1].ID != "CARD-03" {
 		t.Errorf("cartões com lockfiles concorrentes entraram na mesma onda: %+v", wave)
+	}
+}
+
+func TestSetMergeCommitAndRollback(t *testing.T) {
+	b := NewBoard("Rollback Test")
+	_ = b.AddCard(Card{ID: "CARD-01", Title: "Feature X", Status: StatusDone, Winner: "Dev1"})
+
+	if err := b.SetMergeCommit("CARD-01", "abc1234"); err != nil {
+		t.Fatalf("erro ao setar merge commit: %v", err)
+	}
+	if b.Cards[0].MergeCommit != "abc1234" {
+		t.Errorf("merge commit não persistido: %s", b.Cards[0].MergeCommit)
+	}
+
+	// Rollback to BLOCKED
+	if err := b.MarkRolledBack("CARD-01", false, "regressão em produção"); err != nil {
+		t.Fatalf("erro ao marcar rollback: %v", err)
+	}
+	if b.Cards[0].Status != StatusBlocked {
+		t.Errorf("esperava status BLOCKED, obteve %s", b.Cards[0].Status)
+	}
+	if b.Cards[0].Winner != "" {
+		t.Errorf("esperava vencedor limpo, obteve %s", b.Cards[0].Winner)
+	}
+	if !strings.Contains(b.Cards[0].Error, "regressão em produção") {
+		t.Errorf("motivo não registrado em Error: %s", b.Cards[0].Error)
+	}
+
+	// Rollback to BACKLOG
+	if err := b.MarkRolledBack("CARD-01", true, "retentar do zero"); err != nil {
+		t.Fatalf("erro ao marcar rollback para backlog: %v", err)
+	}
+	if b.Cards[0].Status != StatusBacklog {
+		t.Errorf("esperava status BACKLOG, obteve %s", b.Cards[0].Status)
 	}
 }
 

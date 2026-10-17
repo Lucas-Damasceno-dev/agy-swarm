@@ -172,3 +172,33 @@ func (m *Merger) MergeBranch(ctx context.Context, branchName string, commitMsg s
 	return nil
 }
 
+// RollbackCommit reverte cirurgicamente um commit (merge ou simples) com suporte automático a -m 1.
+func (m *Merger) RollbackCommit(ctx context.Context, commitHash string, reason string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	commitHash = strings.TrimSpace(commitHash)
+	if commitHash == "" {
+		return fmt.Errorf("hash do commit vazio")
+	}
+
+	// Verifica se é merge commit inspecionando a quantidade de pais
+	parentsOut, _ := exec.CommandContext(ctx, "git", "-C", m.RepoRoot, "rev-list", "--parents", "-n", "1", commitHash).Output()
+	parents := strings.Fields(strings.TrimSpace(string(parentsOut)))
+	isMerge := len(parents) > 2
+
+	args := []string{"-C", m.RepoRoot, "revert", "--no-edit"}
+	if isMerge {
+		args = append(args, "-m", "1")
+	}
+	args = append(args, commitHash)
+
+	revertCmd := exec.CommandContext(ctx, "git", args...)
+	if out, err := revertCmd.CombinedOutput(); err != nil {
+		_ = exec.Command("git", "-C", m.RepoRoot, "revert", "--abort").Run()
+		return fmt.Errorf("falha ao reverter commit %s: %s (%w)", commitHash, strings.TrimSpace(string(out)), err)
+	}
+
+	return nil
+}
+

@@ -15,6 +15,7 @@ import (
 
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/agyhub"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/metrics"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/kanban"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/lease"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/memory"
@@ -326,6 +327,88 @@ func handleKanban() {
 		}
 		fmt.Printf("🔄 Cartão %s resetado para BACKLOG (erros e bloqueios limpos).\n", cardID)
 
+	case "rollback":
+		fs := flag.NewFlagSet("kanban rollback", flag.ExitOnError)
+		pID := fs.String("id", "", "ID do cartão a reverter (ex: CARD-01)")
+		pToBacklog := fs.Bool("to-backlog", false, "Retorna cartão para BACKLOG em vez de BLOCKED")
+		pReason := fs.String("reason", "reversão solicitada pelo operador", "Motivo técnico do rollback")
+		_ = fs.Parse(subArgs)
+
+		cardID := *pID
+		if cardID == "" && len(fs.Args()) > 0 {
+			cardID = fs.Args()[0]
+		}
+		if cardID == "" {
+			fmt.Fprintln(os.Stderr, "Erro: informe o ID do cartão via -id CARD-XX ou argumento posicional.")
+			os.Exit(1)
+		}
+
+		b, err := kanban.LoadBoard(boardPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Erro ao carregar quadro: %v\n", err)
+			os.Exit(1)
+		}
+
+		var targetCard *kanban.Card
+		for i := range b.Cards {
+			if strings.EqualFold(b.Cards[i].ID, cardID) {
+				targetCard = &b.Cards[i]
+				break
+			}
+		}
+		if targetCard == nil {
+			fmt.Fprintf(os.Stderr, "Erro: cartão %q não encontrado no quadro.\n", cardID)
+			os.Exit(1)
+		}
+		if targetCard.Status != kanban.StatusDone {
+			fmt.Fprintf(os.Stderr, "Erro: cartão %q não está com status DONE (status atual: %s). Apenas cartões concluídos podem sofrer rollback.\n", cardID, targetCard.Status)
+			os.Exit(1)
+		}
+
+		commitHash := targetCard.MergeCommit
+		if commitHash == "" {
+			logOut, err := exec.Command("git", "-C", cwd, "log", fmt.Sprintf("--grep=%s", targetCard.ID), "-n", "1", "--format=%%H").Output()
+			if err == nil {
+				commitHash = strings.TrimSpace(string(logOut))
+			}
+		}
+
+		if commitHash == "" {
+			fmt.Fprintf(os.Stderr, "Erro: nenhum merge commit associado ao cartão %s foi localizado no histórico do git.\n", cardID)
+			os.Exit(1)
+		}
+
+		merger := worktree.NewMerger(cwd)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		shortHash := commitHash
+		if len(shortHash) > 8 {
+			shortHash = shortHash[:8]
+		}
+		fmt.Printf("⏪ ROLLBACK SWARM // Revertendo commit %s do cartão %s (%s)...\n", shortHash, cardID, targetCard.Title)
+		if err := merger.RollbackCommit(ctx, commitHash, *pReason); err != nil {
+			fmt.Fprintf(os.Stderr, "Falha na reversão git: %v\n", err)
+			os.Exit(1)
+		}
+
+		_ = b.MarkRolledBack(cardID, *pToBacklog, *pReason)
+		if err := b.Save(boardPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Erro ao salvar quadro: %v\n", err)
+			os.Exit(1)
+		}
+
+		memClient := memory.NewClient()
+		_ = memClient.RecordMergedDecision("swarm-lead", targetCard.ID, targetCard.Title, "ROLLBACK", *pReason, fmt.Sprintf("Reverted commit %s", commitHash))
+
+		newStatus := "BLOCKED"
+		if *pToBacklog {
+			newStatus = "BACKLOG"
+		}
+		fmt.Printf("✅ Cartão %s revertido com sucesso! Status alterado para %s.\n\n", cardID, newStatus)
+		fmt.Println(b.FormatTable())
+
+
 	case "export":
 		b, err := kanban.LoadBoard(boardPath)
 		if err != nil {
@@ -333,6 +416,14 @@ func handleKanban() {
 			os.Exit(1)
 		}
 		fmt.Print(b.ExportMarkdown())
+
+	case "report":
+		b, err := kanban.LoadBoard(boardPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Erro ao carregar quadro: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(b.GenerateChangelogReport())
 
 	case "plan":
 		fs := flag.NewFlagSet("kanban plan", flag.ExitOnError)
@@ -537,7 +628,9 @@ Uso:
   agy-swarm kanban add -id <ID> -title "<título>" [-depends "ID1,ID2"] [-scope "api/,core/"] [-test-cmd "<cmd>"] "<spec>"
   agy-swarm kanban set -id <ID> -status <BACKLOG|IN_PROGRESS|DONE|BLOCKED> [-winner "..."] [-error "..."]
   agy-swarm kanban retry <ID>
+  agy-swarm kanban rollback [-to-backlog] [-reason "..."] <ID>
   agy-swarm kanban export
+  agy-swarm kanban report
   agy-swarm kanban step
   agy-swarm kanban wave [-max-parallel 3] [--auto-merge] [-inline]
 `)
@@ -718,15 +811,27 @@ func executeKanbanWave(cwd string, maxParallel int, autoMerge bool) (completed i
 			_ = cardWtMgr.SafeCleanup(true)
 
 			_ = b.UpdateCardStatus(c.ID, kanban.StatusDone, fmt.Sprintf("%s (%s)", winner.Role.Name, winner.AccountID), "")
+			headRev, _ := exec.Command("git", "-C", cwd, "rev-parse", "HEAD").Output()
+			if commitHash := strings.TrimSpace(string(headRev)); commitHash != "" {
+				_ = b.SetMergeCommit(c.ID, commitHash)
+			}
 			fmt.Printf("✅ [%s] Integrado com sucesso no branch %s!\n", c.ID, targetBranch)
 			memClient := memory.NewClient()
 			_ = memClient.RecordMergedDecision("swarm-lead", c.ID, c.Title, fmt.Sprintf("%s (%s)", winner.Role.Name, winner.AccountID), c.Spec, winner.Diff)
+			if store, err := metrics.NewStore(); err == nil {
+				_ = store.RecordExecution(winner.AccountID, c.ID, winner.Role.Name, c.Title, "WINNER", 0, len(winner.Diff), "")
+				_ = store.Close()
+			}
 			completed++
 		} else {
 			_ = b.UpdateCardStatus(c.ID, kanban.StatusDone, winner.Role.Name, "")
 			fmt.Printf("ℹ️ [%s] Pronto para merge manual. Branch: %s\n", c.ID, winner.Branch)
 			memClient := memory.NewClient()
 			_ = memClient.RecordMergedDecision("swarm-lead", c.ID, c.Title, winner.Role.Name, c.Spec, winner.Diff)
+			if store, err := metrics.NewStore(); err == nil {
+				_ = store.RecordExecution(winner.AccountID, c.ID, winner.Role.Name, c.Title, "WINNER", 0, len(winner.Diff), "")
+				_ = store.Close()
+			}
 			completed++
 		}
 	}
