@@ -42,10 +42,10 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `⚡ AGY-SWARM // Terminal Multi-Agent Orchestrator
 Uso:
   agy-swarm dispatch [flags] ["tarefa/desafio"]
-  agy-swarm kanban <init|status|next|add|set|step|wave> [flags]
+  agy-swarm kanban <init|plan|status|next|add|set|retry|rollback|export|report|step|wave> [flags]
   agy-swarm autopilot [-max-waves 5] [-max-parallel 3] [--auto-merge]
   agy-swarm pipeline [flags] ["tarefa/desafio"]
-  agy-swarm hub [tui|status|daemon|sync|which|exec] [flags]
+  agy-swarm hub [tui|status|daemon|leaderboard|sync|which|exec] [flags]
   agy-swarm [flags] ["tarefa/desafio inicial"]
   agy-swarm stop [--force]
   agy-swarm attach

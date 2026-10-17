@@ -247,6 +247,74 @@ func (s *Server) startHTTPServer() {
 		_ = json.NewEncoder(w).Encode(st)
 	})
 
+	// 4. API Kanban JSON do repositório ativo
+	mux.HandleFunc("/api/kanban", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		cwd, _ := os.Getwd()
+		boardFile := filepath.Join(cwd, ".swarm", "kanban.json")
+		data, err := os.ReadFile(boardFile)
+		if err != nil {
+			_, _ = w.Write([]byte(`{"epic":"","cards":[]}`))
+			return
+		}
+		_, _ = w.Write(data)
+	})
+
+	// 5. Server-Sent Events (SSE) streaming em tempo real a cada 2s
+	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming não suportado", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		// Envia snapshot inicial imediatamente
+		s.mu.RLock()
+		initialSt := s.cachedState
+		s.mu.RUnlock()
+		if initialSt != nil {
+			if data, err := json.Marshal(initialSt); err == nil {
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+				flusher.Flush()
+			}
+		}
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-s.stopChan:
+				return
+			case <-ticker.C:
+				s.mu.RLock()
+				st := s.cachedState
+				s.mu.RUnlock()
+				if st != nil {
+					if data, err := json.Marshal(st); err == nil {
+						_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+						flusher.Flush()
+					}
+				}
+			}
+		}
+	})
+
+	// 6. Visualizador Web Responsivo do Cluster & Kanban (/board)
+	mux.HandleFunc("/board", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(BoardHTML))
+	})
+
 	addr := fmt.Sprintf("127.0.0.1:%d", s.httpPort)
 	s.httpServer = &http.Server{
 		Addr:    addr,

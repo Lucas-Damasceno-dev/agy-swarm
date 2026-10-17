@@ -166,5 +166,29 @@ func TestDaemon_HTTPServer(t *testing.T) {
 	if !strings.Contains(string(mBody), "agy_cluster_remaining_tokens") {
 		t.Errorf("métricas não contêm agy_cluster_remaining_tokens: %s", string(mBody))
 	}
+
+	// Testa /board
+	boardResp, err := http.Get("http://127.0.0.1:18329/board")
+	if err != nil {
+		t.Fatalf("falha ao consultar /board: %v", err)
+	}
+	defer boardResp.Body.Close()
+	if boardResp.StatusCode != http.StatusOK {
+		t.Errorf("esperava status 200 no /board, obteve %d", boardResp.StatusCode)
+	}
+	bBody, _ := io.ReadAll(boardResp.Body)
+	if !strings.Contains(string(bBody), "AGY-SWARM // CLUSTER CONTROL PLANE") {
+		t.Errorf("/board não retornou o HTML do painel: %s", string(bBody))
+	}
+
+	// Testa /api/kanban
+	kanbanResp, err := http.Get("http://127.0.0.1:18329/api/kanban")
+	if err != nil {
+		t.Fatalf("falha ao consultar /api/kanban: %v", err)
+	}
+	defer kanbanResp.Body.Close()
+	if kanbanResp.StatusCode != http.StatusOK {
+		t.Errorf("esperava status 200 no /api/kanban, obteve %d", kanbanResp.StatusCode)
+	}
 }
 

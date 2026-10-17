@@ -97,7 +97,10 @@ agy-swarm kanban next            # Identifica próximo cartão elegível no DAG
 agy-swarm kanban step            # Despacha automaticamente o próximo cartão para o enxame
 agy-swarm kanban wave -max-parallel 3 --auto-merge # Executa onda de cartões paralelos independentes
 agy-swarm kanban retry CARD-01   # Reseta cartão com falha para BACKLOG e limpa erros
+agy-swarm kanban rollback CARD-01 # Reversão cirúrgica de merge commit no git e retorno do cartão para BLOCKED
+agy-swarm kanban rollback -to-backlog CARD-01 # Reverte commit e retorna cartão direto para BACKLOG para nova onda
 agy-swarm kanban export          # Exporta tabela GitHub Flavored Markdown do épico
+agy-swarm kanban report          # Gera relatório executivo de release e changelog estruturado
 agy-swarm kanban set -id CARD-01 -status DONE  # Marca cartão concluído
 
 # Piloto Automático em Ondas Consecutivas até Esgotar Backlog:
@@ -106,7 +109,8 @@ agy-swarm autopilot -max-waves 5 -max-parallel 3 --auto-merge
 # Hub de Gerenciamento das 10 Contas (Multicall Binary agy-hub):
 agy-hub                          # Abre TUI interativo Bubbletea
 agy-hub status                   # Tabela de cotas (5h e semanal), cooldowns e PIDs
-agy-hub daemon [-http-port 8318] # Inicia daemon residente com métricas Prometheus (http://localhost:8318/metrics)
+agy-hub leaderboard              # Ranking de vitórias, win rate, velocidade e acurácia por conta
+agy-hub daemon [-http-port 8318] # Inicia daemon residente com métricas Prometheus e Web Dashboard (/board)
 agy-hub auto                     # Executa tarefa na conta com maior cota restante
 agy-hub which                    # Identifica qual conta seria eleita para execução
 agy-hub sync                     # Sincroniza tokens com o cli-proxy-api local
