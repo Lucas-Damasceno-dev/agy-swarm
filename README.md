@@ -88,6 +88,8 @@ agy-swarm doctor
 
 # Orquestração Kanban Swarm (Control Plane do Maestro via DAG de Cartões):
 agy-swarm kanban init "Refatoração do Motor de Renderização"
+agy-swarm kanban plan "Implementar sistema de cache com fallback local" # Decomposição autônoma via Arquiteto LLM
+agy-swarm kanban plan -dry-run "Novo módulo de telemetria"              # Simula decomposição de cartões sem gastar cotas
 agy-swarm kanban add -id CARD-01 -title "Definir Interfaces" -test-cmd "cargo test -p engine-core" "Spec..."
 agy-swarm kanban add -id CARD-02 -title "Implementar Shaders" -depends "CARD-01" "Spec..."
 agy-swarm kanban status          # Tabela visual do quadro

@@ -8,13 +8,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/agyhub"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/config"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/kanban"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/lease"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/memory"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/pipeline"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/worktree"
 )
@@ -331,11 +334,170 @@ func handleKanban() {
 		}
 		fmt.Print(b.ExportMarkdown())
 
+	case "plan":
+		fs := flag.NewFlagSet("kanban plan", flag.ExitOnError)
+		pDryRun := fs.Bool("dry-run", false, "Simula planejamento sem disparar chamadas ao modelo")
+		pTestCmd := fs.String("test-cmd", "", "Comando padrão de testes a ser propagado nos cartões")
+		_ = fs.Parse(subArgs)
+
+		epicDesc := strings.TrimSpace(strings.Join(fs.Args(), " "))
+		if epicDesc == "" {
+			fmt.Fprintln(os.Stderr, "Erro: especifique a descrição ou objetivo do épico. Ex: agy-swarm kanban plan \"Criar sistema de cache\"")
+			os.Exit(1)
+		}
+
+		defaultTest := *pTestCmd
+		if defaultTest == "" {
+			defaultTest = detectDefaultTestCmd(cwd)
+		}
+
+		fmt.Printf("🧠 ARCHITECT SWARM // Decompondo épico: %q...\n", epicDesc)
+
+		var cards []kanban.Card
+		if *pDryRun {
+			cards = []kanban.Card{
+				{
+					ID:      "CARD-01",
+					Title:   "Definir Interfaces e Tipos",
+					Spec:    fmt.Sprintf("Definir contratos para: %s", epicDesc),
+					Scope:   []string{"internal/types"},
+					TestCmd: defaultTest,
+					Status:  kanban.StatusBacklog,
+				},
+				{
+					ID:        "CARD-02",
+					Title:     "Implementação do Motor Principal",
+					Spec:      fmt.Sprintf("Implementar lógica central para: %s", epicDesc),
+					DependsOn: []string{"CARD-01"},
+					Scope:     []string{"internal/engine"},
+					TestCmd:   defaultTest,
+					Status:    kanban.StatusBacklog,
+				},
+			}
+		} else {
+			planPrompt := fmt.Sprintf(`Você é o Arquiteto de Software e Maestro do Enxame AGY-SWARM.
+Decomponha o seguinte objetivo técnico em uma lista DAG de 2 a 5 cartões atômicos, ortogonais e verificáveis:
+"%s"
+
+Diretrizes estritas:
+1. Retorne ESTRITAMENTE e UNICAMENTE um JSON no seguinte schema (sem introdução nem conclusões):
+{
+  "epic": "%s",
+  "cards": [
+    {
+      "id": "CARD-01",
+      "title": "título curto (máx 35 caracteres)",
+      "spec": "especificação técnica clara e testável",
+      "scope": ["pastas/ou/arquivos/do/modulo"],
+      "depends_on": []
+    }
+  ]
+}
+2. Cartões independentes devem ter depends_on vazio para poderem rodar na mesma onda paralela.
+3. Cartões que dependem de contratos anteriores devem listar o ID no depends_on (ex: ["CARD-01"]).
+4. Não adicione texto fora do JSON.`, epicDesc, epicDesc)
+
+			promptFile, err := pipeline.WritePromptFile(cwd, "kanban-plan", planPrompt)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Erro ao gravar prompt temporário: %v\n", err)
+				os.Exit(1)
+			}
+			defer os.Remove(promptFile)
+
+			hubClient := agyhub.NewClient("")
+			broker := lease.NewBroker(hubClient)
+			runner := pipeline.NewOSProcessRunner()
+			dispatcher := pipeline.NewEphemeralDispatcher(runner, broker)
+
+			archRole := config.RoleConfig{Type: config.RoleArch, Name: "Arquiteto", Profile: "default"}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+
+			out, exitCode, activeLease, err := dispatcher.DispatchWithFailover(ctx, cwd, archRole, "KANBAN_PLAN", promptFile, 3*time.Minute)
+			if activeLease != nil {
+				broker.Release(activeLease)
+			}
+
+			if err != nil || exitCode != 0 {
+				fmt.Fprintf(os.Stderr, "Aviso: falha na invocação do Arquiteto (exit: %d): %v. Gerando cartão inicial único.\n", exitCode, err)
+				cards = []kanban.Card{
+					{
+						ID:      "CARD-01",
+						Title:   epicDesc,
+						Spec:    epicDesc,
+						TestCmd: defaultTest,
+						Status:  kanban.StatusBacklog,
+					},
+				}
+			} else {
+				planOut, pErr := parsePlanJSON(out)
+				if pErr != nil || len(planOut.Cards) == 0 {
+					fmt.Fprintf(os.Stderr, "Aviso ao decodificar JSON do plano: %v. Gerando cartão inicial único.\n", pErr)
+					cards = []kanban.Card{
+						{
+							ID:      "CARD-01",
+							Title:   epicDesc,
+							Spec:    epicDesc,
+							TestCmd: defaultTest,
+							Status:  kanban.StatusBacklog,
+						},
+					}
+				} else {
+					cards = planOut.Cards
+					for i := range cards {
+						cards[i].Status = kanban.StatusBacklog
+						if cards[i].TestCmd == "" {
+							cards[i].TestCmd = defaultTest
+						}
+					}
+				}
+			}
+		}
+
+		b := kanban.NewBoard(epicDesc)
+		for _, c := range cards {
+			_ = b.AddCard(c)
+		}
+		if err := b.Save(boardPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Erro ao salvar plano no quadro: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("✅ Épico decomposto em %d cartão(ões) e salvo em %s!\n\n", len(cards), boardPath)
+		fmt.Print(b.FormatTable())
+
 	default:
 		fmt.Fprintf(os.Stderr, "Subcomando kanban desconhecido: %s\n", subcmd)
 		printKanbanUsage()
 		os.Exit(1)
 	}
+}
+
+type PlanOutput struct {
+	Epic  string        `json:"epic"`
+	Cards []kanban.Card `json:"cards"`
+}
+
+func parsePlanJSON(rawOutput string) (*PlanOutput, error) {
+	jsonRegex := regexp.MustCompile(`(?s)\{\s*".*"\s*:\s*.*"cards".*\}`)
+	match := jsonRegex.FindString(rawOutput)
+	if match != "" {
+		var plan PlanOutput
+		if err := json.Unmarshal([]byte(match), &plan); err == nil && len(plan.Cards) > 0 {
+			return &plan, nil
+		}
+	}
+
+	arrayRegex := regexp.MustCompile(`(?s)\[\s*\{.*\}\s*\]`)
+	arrMatch := arrayRegex.FindString(rawOutput)
+	if arrMatch != "" {
+		var cards []kanban.Card
+		if err := json.Unmarshal([]byte(arrMatch), &cards); err == nil && len(cards) > 0 {
+			return &PlanOutput{Cards: cards}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("nenhum bloco JSON estruturado de cartões encontrado")
 }
 
 func setupTmuxWaveWindow(cwd string, wave []kanban.Card, logsDir string) {
@@ -369,6 +531,7 @@ func printKanbanUsage() {
 	fmt.Fprintf(os.Stderr, `⚡ AGY-SWARM // KANBAN SWARM MANAGER
 Uso:
   agy-swarm kanban init "<título do épico>"
+  agy-swarm kanban plan [-dry-run] [-test-cmd "<cmd>"] "<descrição do épico>"
   agy-swarm kanban status
   agy-swarm kanban next [--json]
   agy-swarm kanban add -id <ID> -title "<título>" [-depends "ID1,ID2"] [-scope "api/,core/"] [-test-cmd "<cmd>"] "<spec>"
@@ -556,10 +719,14 @@ func executeKanbanWave(cwd string, maxParallel int, autoMerge bool) (completed i
 
 			_ = b.UpdateCardStatus(c.ID, kanban.StatusDone, fmt.Sprintf("%s (%s)", winner.Role.Name, winner.AccountID), "")
 			fmt.Printf("✅ [%s] Integrado com sucesso no branch %s!\n", c.ID, targetBranch)
+			memClient := memory.NewClient()
+			_ = memClient.RecordMergedDecision("swarm-lead", c.ID, c.Title, fmt.Sprintf("%s (%s)", winner.Role.Name, winner.AccountID), c.Spec, winner.Diff)
 			completed++
 		} else {
 			_ = b.UpdateCardStatus(c.ID, kanban.StatusDone, winner.Role.Name, "")
 			fmt.Printf("ℹ️ [%s] Pronto para merge manual. Branch: %s\n", c.ID, winner.Branch)
+			memClient := memory.NewClient()
+			_ = memClient.RecordMergedDecision("swarm-lead", c.ID, c.Title, winner.Role.Name, c.Spec, winner.Diff)
 			completed++
 		}
 	}

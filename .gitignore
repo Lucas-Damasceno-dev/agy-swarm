@@ -11,3 +11,4 @@ bin/
 *.db
 *.sqlite
 .gemini/
+.swarm/
