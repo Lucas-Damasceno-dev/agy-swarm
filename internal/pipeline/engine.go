@@ -113,21 +113,37 @@ func (e *PipelineEngine) emitEvent(stage StageType, status, detail string) {
 	}
 	ts := time.Now().Format("15:04:05")
 	icon := "⚡"
+	stageLabel := string(stage)
 	switch stage {
 	case StageContract:
 		icon = "📐"
+		stageLabel = "1/4 CONTRATOS"
 	case StageRedTeam:
-		icon = "🧪"
+		icon = "🛡️"
+		stageLabel = "2/4 RED-TEAM"
 	case StageSpeculative:
 		icon = "⚔️"
+		stageLabel = "3/4 BEST-OF-N"
 	case StageAuditMerge:
 		icon = "🏆"
+		stageLabel = "4/4 REFINERY"
 	}
 	prefix := ""
 	if e.cfg.CardID != "" {
 		prefix = fmt.Sprintf("[%s] ", e.cfg.CardID)
 	}
-	line := fmt.Sprintf("[%s] %s %s[%s] %s", ts, icon, prefix, stage, detail)
+	statusBadge := "•"
+	switch status {
+	case "STARTED":
+		statusBadge = "⏳"
+	case "COMPLETED":
+		statusBadge = "✓"
+	case "FAILED":
+		statusBadge = "❌"
+	case "SELF_HEALING":
+		statusBadge = "🩹"
+	}
+	line := fmt.Sprintf("[%s] %s %s[%s] %s %s", ts, icon, prefix, stageLabel, statusBadge, detail)
 	if e.cfg.LogWriter != nil {
 		_, _ = fmt.Fprintln(e.cfg.LogWriter, line)
 	}

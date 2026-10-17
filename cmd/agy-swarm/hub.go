@@ -22,6 +22,7 @@ import (
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/orchestrator"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/syncer"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/tui"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/kanban"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -183,27 +184,50 @@ func runStatus(args []string) {
 
 func printBarStatus(state *model.ClusterState) {
 	var sb strings.Builder
-	sb.WriteString("AGY:[")
-	for i, p := range state.Profiles {
-		icon := "○" // Idle
+	sb.WriteString(fmt.Sprintf("⚡ %d%% (%.1fM)", state.ClusterQuotaPercent, float64(state.ClusterRemainingTokens)/1000000.0))
+
+	// Contas ativas, saudáveis e cooldowns
+	activeCount := 0
+	cooldownCount := 0
+	healthyCount := 0
+	for _, p := range state.Profiles {
 		if p.Status == model.StatusActive {
-			icon = "●" // Active
-		} else if p.Status == model.StatusCooldown {
-			icon = "❄" // Cooldown
-		} else if p.Status == model.StatusError {
-			icon = "✖" // Error
+			activeCount++
 		}
-		sb.WriteString(fmt.Sprintf("%d:%s", i+1, icon))
-		if i < len(state.Profiles)-1 {
-			sb.WriteString(" ")
+		if p.InCooldown || p.Status == model.StatusCooldown {
+			cooldownCount++
+		}
+		if p.Status != model.StatusError && !p.InCooldown {
+			healthyCount++
 		}
 	}
-	sb.WriteString("]")
 
-	if state.ProxyRunning {
-		sb.WriteString(" ⚡Proxy:OK")
-	} else {
-		sb.WriteString(" ⚠️Proxy:OFF")
+	sb.WriteString(fmt.Sprintf(" │ 🟢 %d/%d", healthyCount, len(state.Profiles)))
+	if activeCount > 0 {
+		sb.WriteString(fmt.Sprintf(" (⚡%d ativos)", activeCount))
+	}
+	if cooldownCount > 0 {
+		sb.WriteString(fmt.Sprintf(" │ ❄️ %d CD", cooldownCount))
+	}
+
+	// Kanban no diretório atual se houver
+	cwd, _ := os.Getwd()
+	boardPath := filepath.Join(cwd, ".swarm", "kanban.json")
+	if data, err := os.ReadFile(boardPath); err == nil {
+		var b kanban.Board
+		if err := json.Unmarshal(data, &b); err == nil && len(b.Cards) > 0 {
+			doneCount := 0
+			for _, c := range b.Cards {
+				if c.Status == kanban.StatusDone {
+					doneCount++
+				}
+			}
+			sb.WriteString(fmt.Sprintf(" │ 📋 %d/%d DONE", doneCount, len(b.Cards)))
+		}
+	}
+
+	if !state.ProxyRunning {
+		sb.WriteString(" │ ⚠️ Proxy:OFF")
 	}
 
 	fmt.Println(sb.String())

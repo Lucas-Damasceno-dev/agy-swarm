@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -21,6 +23,8 @@ import (
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/orchestrator"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/quarantine"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/syncer"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/kanban"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/worktree"
 )
 
 func GetDefaultSocketPath() string {
@@ -261,6 +265,103 @@ func (s *Server) startHTTPServer() {
 		}
 		_, _ = w.Write(data)
 	})
+
+	// 5. API Retry de Cartão via Web
+	mux.HandleFunc("/api/kanban/retry", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		cardID := r.URL.Query().Get("id")
+		if cardID == "" {
+			http.Error(w, `{"error":"parâmetro id ausente"}`, http.StatusBadRequest)
+			return
+		}
+		cwd, _ := os.Getwd()
+		boardFile := filepath.Join(cwd, ".swarm", "kanban.json")
+		b, err := kanban.LoadBoard(boardFile)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"falha ao carregar quadro: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if err := b.RetryCard(cardID); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusBadRequest)
+			return
+		}
+		_ = b.Save(boardFile)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": fmt.Sprintf("cartão %s resetado para BACKLOG", cardID)})
+	})
+
+	// 6. API Rollback de Cartão via Web
+	mux.HandleFunc("/api/kanban/rollback", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		cardID := r.URL.Query().Get("id")
+		if cardID == "" {
+			http.Error(w, `{"error":"parâmetro id ausente"}`, http.StatusBadRequest)
+			return
+		}
+		toBacklog := r.URL.Query().Get("to_backlog") == "true"
+		reason := r.URL.Query().Get("reason")
+		if reason == "" {
+			reason = "reversão solicitada via painel web"
+		}
+		cwd, _ := os.Getwd()
+		boardFile := filepath.Join(cwd, ".swarm", "kanban.json")
+		b, err := kanban.LoadBoard(boardFile)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"falha ao carregar quadro: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		var targetCard *kanban.Card
+		for i := range b.Cards {
+			if strings.EqualFold(b.Cards[i].ID, cardID) {
+				targetCard = &b.Cards[i]
+				break
+			}
+		}
+		if targetCard == nil {
+			http.Error(w, `{"error":"cartão não encontrado"}`, http.StatusNotFound)
+			return
+		}
+		if targetCard.Status != kanban.StatusDone {
+			http.Error(w, `{"error":"apenas cartões concluídos podem sofrer rollback"}`, http.StatusBadRequest)
+			return
+		}
+		commitHash := targetCard.MergeCommit
+		if commitHash == "" {
+			logOut, err := exec.Command("git", "-C", cwd, "log", fmt.Sprintf("--grep=%s", targetCard.ID), "-n", "1", "--format=%H").Output()
+			if err == nil {
+				commitHash = strings.TrimSpace(string(logOut))
+			}
+		}
+		if commitHash != "" {
+			merger := worktree.NewMerger(cwd)
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+			_ = merger.RollbackCommit(ctx, commitHash, reason)
+			cancel()
+		}
+		_ = b.MarkRolledBack(cardID, toBacklog, reason)
+		_ = b.Save(boardFile)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "message": fmt.Sprintf("cartão %s revertido", cardID)})
+	})
+
+	// 7. API Diff de Cartão via Web
+	mux.HandleFunc("/api/kanban/diff", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		cardID := r.URL.Query().Get("id")
+		cwd, _ := os.Getwd()
+		if cardID == "" {
+			diffOut, _ := exec.Command("git", "-C", cwd, "diff", "HEAD~1").Output()
+			_ = json.NewEncoder(w).Encode(map[string]string{"diff": string(diffOut)})
+			return
+		}
+		logOut, _ := exec.Command("git", "-C", cwd, "log", fmt.Sprintf("--grep=%s", cardID), "-n", "1", "--format=%H").Output()
+		commitHash := strings.TrimSpace(string(logOut))
+		if commitHash != "" {
+			diffOut, _ := exec.Command("git", "-C", cwd, "show", commitHash).Output()
+			_ = json.NewEncoder(w).Encode(map[string]string{"commit": commitHash, "diff": string(diffOut)})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"diff": "Nenhum commit/diff encontrado para este cartão."})
+	})
+
 
 	// 5. Server-Sent Events (SSE) streaming em tempo real a cada 2s
 	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
@@ -556,6 +657,9 @@ func FetchStateWithRetries(socketPath string, maxAttempts int, initialBackoff ti
 			time.Sleep(backoff)
 			backoff *= 2
 		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("timeout or connection refused")
 	}
 	return nil, fmt.Errorf("daemon connection failed after %d attempts: %w", maxAttempts, lastErr)
 }

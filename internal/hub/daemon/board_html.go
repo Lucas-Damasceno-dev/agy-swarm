@@ -1,6 +1,6 @@
 package daemon
 
-// BoardHTML define a interface web responsiva autossuficiente (Zero-CDN, Dark Mode, SSE)
+// BoardHTML define a interface web responsiva autossuficiente (Zero-CDN, Dark Mode, SSE, Diff & Modal)
 const BoardHTML = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -104,7 +104,7 @@ const BoardHTML = `<!DOCTYPE html>
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 14px;
-      min-height: 200px;
+      min-height: 220px;
     }
     .kanban-col-header {
       font-size: 13px;
@@ -120,19 +120,107 @@ const BoardHTML = `<!DOCTYPE html>
       background: #21262d;
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 10px;
+      padding: 12px;
       margin-bottom: 10px;
       font-size: 12px;
+      cursor: pointer;
+      transition: border-color 0.2s, transform 0.1s;
+    }
+    .task-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
     }
     .task-id { font-weight: 700; color: var(--accent); margin-bottom: 4px; }
-    .task-title { font-weight: 600; margin-bottom: 6px; }
+    .task-title { font-weight: 600; margin-bottom: 6px; font-size: 13px; }
     .task-meta { font-size: 11px; color: var(--text-muted); }
+
+    /* Modal / Drawer */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(2px);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+    .modal-content {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      max-width: 800px;
+      width: 100%;
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }
+    .modal-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .modal-title { font-size: 16px; font-weight: 700; color: var(--accent); }
+    .modal-close {
+      background: none; border: none; color: var(--text-muted);
+      font-size: 20px; cursor: pointer; padding: 4px;
+    }
+    .modal-close:hover { color: var(--text); }
+    .modal-body {
+      padding: 20px;
+      overflow-y: auto;
+      font-size: 13px;
+    }
+    .modal-footer {
+      padding: 14px 20px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+    .btn {
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: #21262d;
+      color: var(--text);
+      transition: background 0.2s;
+    }
+    .btn:hover { background: #30363d; }
+    .btn-danger { background: rgba(248, 81, 73, 0.2); color: var(--red); border-color: var(--red); }
+    .btn-danger:hover { background: rgba(248, 81, 73, 0.3); }
+    .btn-primary { background: rgba(88, 166, 255, 0.2); color: var(--accent); border-color: var(--accent); }
+    .btn-primary:hover { background: rgba(88, 166, 255, 0.3); }
+    .diff-box {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 11px;
+      max-height: 320px;
+      overflow: auto;
+      white-space: pre-wrap;
+      margin-top: 10px;
+    }
+    .diff-add { color: var(--green); }
+    .diff-del { color: var(--red); }
   </style>
 </head>
 <body>
   <header>
     <div class="brand">⚡ AGY-SWARM // CLUSTER CONTROL PLANE</div>
-    <div id="statusBadge" class="badge badge-live">Conectado (SSE)</div>
+    <div style="display: flex; gap: 10px; align-items: center;">
+      <button class="btn btn-primary" onclick="fetchKanban(); fetch('/api/status').then(r=>r.json()).then(renderCluster)">🔄 Atualizar</button>
+      <div id="statusBadge" class="badge badge-live">Conectado (SSE)</div>
+    </div>
   </header>
 
   <div class="metrics-grid">
@@ -194,7 +282,32 @@ const BoardHTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Modal do Cartão -->
+  <div id="cardModal" class="modal-backdrop" onclick="closeModal(event)">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div id="mCardTitle" class="modal-title">Detalhes do Cartão</div>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="margin-bottom: 12px;"><strong>ID:</strong> <span id="mCardID"></span> | <strong>Status:</strong> <span id="mCardStatus"></span></div>
+        <div style="margin-bottom: 12px;"><strong>Especificação Técnica:</strong><div id="mCardSpec" style="margin-top: 4px; color: var(--text-muted); background: #0d1117; padding: 8px; border-radius: 4px;"></div></div>
+        <div id="mCardExtra" style="margin-bottom: 12px;"></div>
+        <div id="mDiffContainer" style="display: none;">
+          <strong>Diff / Solução Integrada:</strong>
+          <div id="mDiffBox" class="diff-box"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div id="mCardActions"></div>
+        <button class="btn" onclick="closeModal()">Fechar</button>
+      </div>
+    </div>
+  </div>
+
   <script>
+    let currentCards = [];
+
     function renderCluster(st) {
       if (!st) return;
       document.getElementById('clusterTokens').textContent = (st.cluster_remaining_tokens || 0).toLocaleString();
@@ -239,6 +352,7 @@ const BoardHTML = `<!DOCTYPE html>
 
     function renderKanban(board) {
       if (!board) return;
+      currentCards = board.cards || [];
       if (board.epic) {
         document.getElementById('epicTitle').textContent = '📋 Kanban Swarm // Épico: ' + board.epic;
       }
@@ -258,6 +372,7 @@ const BoardHTML = `<!DOCTYPE html>
             counts[st]++;
             const div = document.createElement('div');
             div.className = 'task-card';
+            div.onclick = () => openCardModal(c);
             let meta = '';
             if (c.winner) meta += ` + "`" + `🏆 ${c.winner}<br>` + "`" + `;
             if (c.error) meta += ` + "`" + `<span style="color: var(--red);">${c.error}</span><br>` + "`" + `;
@@ -275,6 +390,80 @@ const BoardHTML = `<!DOCTYPE html>
       document.getElementById('countInProgress').textContent = counts['IN_PROGRESS'];
       document.getElementById('countDone').textContent = counts['DONE'];
       document.getElementById('countBlocked').textContent = counts['BLOCKED'];
+    }
+
+    function openCardModal(c) {
+      document.getElementById('mCardTitle').textContent = ` + "`" + `[${c.id}] ${c.title}` + "`" + `;
+      document.getElementById('mCardID').textContent = c.id;
+      document.getElementById('mCardStatus').textContent = c.status;
+      document.getElementById('mCardSpec').textContent = c.spec || 'Nenhuma especificação cadastrada.';
+
+      let extra = '';
+      if (c.winner) extra += ` + "`" + `<div><strong>Vencedor:</strong> ${c.winner}</div>` + "`" + `;
+      if (c.error) extra += ` + "`" + `<div style="color: var(--red);"><strong>Erro/Motivo:</strong> ${c.error}</div>` + "`" + `;
+      if (c.scope && c.scope.length) extra += ` + "`" + `<div><strong>Escopo:</strong> ${c.scope.join(', ')}</div>` + "`" + `;
+      if (c.merge_commit) extra += ` + "`" + `<div><strong>Merge Commit:</strong> <code>${c.merge_commit}</code></div>` + "`" + `;
+      document.getElementById('mCardExtra').innerHTML = extra;
+
+      const actDiv = document.getElementById('mCardActions');
+      actDiv.innerHTML = '';
+      if (c.status === 'BLOCKED' || c.status === 'FAILED') {
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'btn btn-primary';
+        retryBtn.textContent = '🔄 Retry Cartão';
+        retryBtn.onclick = () => retryCard(c.id);
+        actDiv.appendChild(retryBtn);
+      } else if (c.status === 'DONE') {
+        const rbBtn = document.createElement('button');
+        rbBtn.className = 'btn btn-danger';
+        rbBtn.textContent = '⏪ Rollback Commit';
+        rbBtn.onclick = () => rollbackCard(c.id);
+        actDiv.appendChild(rbBtn);
+      }
+
+      const diffCont = document.getElementById('mDiffContainer');
+      const diffBox = document.getElementById('mDiffBox');
+      diffCont.style.display = 'block';
+      diffBox.textContent = 'Carregando diff...';
+      fetch(` + "`" + `/api/kanban/diff?id=${encodeURIComponent(c.id)}` + "`" + `)
+        .then(r => r.json())
+        .then(res => {
+          diffBox.innerHTML = '';
+          const lines = (res.diff || '').split('\n');
+          lines.forEach(line => {
+            const span = document.createElement('div');
+            if (line.startsWith('+') && !line.startsWith('+++')) span.className = 'diff-add';
+            else if (line.startsWith('-') && !line.startsWith('---')) span.className = 'diff-del';
+            span.textContent = line;
+            diffBox.appendChild(span);
+          });
+        })
+        .catch(() => { diffBox.textContent = 'Nenhum diff disponível.'; });
+
+      document.getElementById('cardModal').style.display = 'flex';
+    }
+
+    function closeModal(e) {
+      if (!e || e.target.id === 'cardModal' || e.target.className === 'modal-close' || e.target.tagName === 'BUTTON') {
+        document.getElementById('cardModal').style.display = 'none';
+      }
+    }
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') document.getElementById('cardModal').style.display = 'none';
+    });
+
+    function retryCard(id) {
+      fetch(` + "`" + `/api/kanban/retry?id=${encodeURIComponent(id)}` + "`" + `, { method: 'POST' })
+        .then(r => r.json())
+        .then(() => { closeModal(); fetchKanban(); });
+    }
+
+    function rollbackCard(id) {
+      if (!confirm(` + "`" + `Deseja realmente reverter o commit do cartão ${id}?` + "`" + `)) return;
+      fetch(` + "`" + `/api/kanban/rollback?id=${encodeURIComponent(id)}` + "`" + `, { method: 'POST' })
+        .then(r => r.json())
+        .then(() => { closeModal(); fetchKanban(); });
     }
 
     function fetchKanban() {

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/model"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/orchestrator"
 	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/hub/syncer"
+	"github.com/Lucas-Damasceno-dev/agy-swarm/internal/kanban"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,6 +24,7 @@ const (
 	ViewDashboard ViewMode = iota
 	ViewPromptModal
 	ViewLogModal
+	ViewKanban
 )
 
 type tickMsg time.Time
@@ -186,10 +189,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.viewMode == ViewKanban {
+			switch msg.String() {
+			case "esc", "q", "b", "tab":
+				m.viewMode = ViewDashboard
+				return m, nil
+			case "r":
+				m.statusText = "Recarregando quadro Kanban..."
+				m.statusTime = time.Now()
+				return m, nil
+			case "ctrl+c":
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+
 		// Dashboard Key Handling
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+
+		case "b", "tab":
+			m.viewMode = ViewKanban
+			return m, nil
 
 		case "up", "k":
 			if m.cursor > 0 {
@@ -297,6 +319,11 @@ func (m Model) View() string {
 	// Live Log Modal View
 	if m.viewMode == ViewLogModal {
 		return m.renderLogModal()
+	}
+
+	// Kanban View
+	if m.viewMode == ViewKanban {
+		return m.renderKanbanView()
 	}
 
 	var b strings.Builder
@@ -466,7 +493,7 @@ func (m Model) View() string {
 		Foreground(lipgloss.Color("#94A3B8")).
 		MarginTop(1)
 
-	footer := "[Enter] Sessão • [d] Dispatch • [l] Logs • [L] Login • [s] Sync Proxy • [p] Reiniciar Proxy • [r] Refresh • [q] Sair"
+	footer := "[b/Tab] Kanban • [Enter] Sessão • [d] Dispatch • [l] Logs • [L] Login • [s] Sync • [p] Proxy • [r] Refresh • [q] Sair"
 	b.WriteString(footerStyle.Render(footer))
 
 	return b.String()
@@ -534,4 +561,135 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (m Model) renderKanbanView() string {
+	cwd, _ := os.Getwd()
+	boardPath := kanban.DefaultBoardPath(cwd)
+	board, err := kanban.LoadBoard(boardPath)
+
+	var b strings.Builder
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#38BDF8")).
+		Background(lipgloss.Color("#1E293B")).
+		Padding(0, 1)
+
+	b.WriteString(titleStyle.Render("📋 AGY-SWARM KANBAN // Speculative Execution Board"))
+	b.WriteString("\n\n")
+
+	if err != nil || board == nil || len(board.Cards) == 0 {
+		emptyBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#475569")).
+			Padding(1, 2)
+
+		msg := fmt.Sprintf("Nenhum quadro Kanban ativo em:\n  %s\n\nPara decompor um épico em DAG especulativa:\n  $ agy-swarm kanban plan \"Descreva seu épico\"\n\nOu adicione um cartão manualmente:\n  $ agy-swarm kanban add -title \"Feature\" -scope \"internal/pkg\"", boardPath)
+		b.WriteString(emptyBox.Render(msg))
+		b.WriteString("\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("[b / Tab / Esc] Voltar ao Dashboard • [r] Recarregar • [q] Sair"))
+		return b.String()
+	}
+
+	epicStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FCD34D")).Bold(true)
+	b.WriteString(fmt.Sprintf("Épico: %s (Total: %d cartões)\n\n", epicStyle.Render(board.Epic), len(board.Cards)))
+
+	backlog := make([]kanban.Card, 0)
+	inProgress := make([]kanban.Card, 0)
+	done := make([]kanban.Card, 0)
+	blocked := make([]kanban.Card, 0)
+
+	for _, c := range board.Cards {
+		switch c.Status {
+		case kanban.StatusBacklog:
+			backlog = append(backlog, c)
+		case kanban.StatusInProgress:
+			inProgress = append(inProgress, c)
+		case kanban.StatusDone:
+			done = append(done, c)
+		case kanban.StatusBlocked, kanban.StatusFailed:
+			blocked = append(blocked, c)
+		default:
+			backlog = append(backlog, c)
+		}
+	}
+
+	colWidth := max(22, (m.width-12)/4)
+	if colWidth > 38 {
+		colWidth = 38
+	}
+
+	renderCol := func(title string, color string, cards []kanban.Card) string {
+		header := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color(color)).
+			Render(fmt.Sprintf("%s (%d)", title, len(cards)))
+
+		var content strings.Builder
+		content.WriteString(header + "\n\n")
+
+		if len(cards) == 0 {
+			content.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B")).Render("— vazio —"))
+		} else {
+			for i, c := range cards {
+				if i > 0 {
+					content.WriteString("\n")
+				}
+				cardBox := lipgloss.NewStyle().
+					Border(lipgloss.NormalBorder()).
+					BorderForeground(lipgloss.Color("#334155")).
+					Padding(0, 1).
+					Width(colWidth - 4)
+
+				var cardBody strings.Builder
+				cardBody.WriteString(lipgloss.NewStyle().Bold(true).Render(c.ID) + "\n")
+				cTitle := c.Title
+				if len(cTitle) > colWidth-6 && colWidth > 6 {
+					cTitle = cTitle[:colWidth-9] + "..."
+				}
+				cardBody.WriteString(cTitle + "\n")
+
+				if len(c.Scope) > 0 {
+					scopeStr := strings.Join(c.Scope, ", ")
+					if len(scopeStr) > colWidth-6 && colWidth > 6 {
+						scopeStr = scopeStr[:colWidth-9] + "..."
+					}
+					cardBody.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B")).Render(scopeStr) + "\n")
+				}
+
+				if c.Winner != "" {
+					cardBody.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#4ADE80")).Render("🏆 "+c.Winner) + "\n")
+				}
+				if c.Error != "" {
+					errMsg := c.Error
+					if len(errMsg) > colWidth-6 && colWidth > 6 {
+						errMsg = errMsg[:colWidth-9] + "..."
+					}
+					cardBody.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Render("⚠️ "+errMsg) + "\n")
+				}
+
+				content.WriteString(cardBox.Render(cardBody.String()) + "\n")
+			}
+		}
+
+		colBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color(color)).
+			Padding(1).
+			Width(colWidth).
+			Height(max(10, m.height-14))
+
+		return colBox.Render(content.String())
+	}
+
+	colBacklog := renderCol("BACKLOG", "#94A3B8", backlog)
+	colInProgress := renderCol("IN PROGRESS", "#38BDF8", inProgress)
+	colDone := renderCol("DONE", "#4ADE80", done)
+	colBlocked := renderCol("BLOCKED", "#F87171", blocked)
+
+	columns := lipgloss.JoinHorizontal(lipgloss.Top, colBacklog, " ", colInProgress, " ", colDone, " ", colBlocked)
+	b.WriteString(columns)
+	b.WriteString("\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render("[b / Tab / Esc] Voltar ao Dashboard • [r] Recarregar • [q] Sair"))
+
+	return b.String()
 }

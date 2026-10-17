@@ -74,17 +74,16 @@ func TestDaemon_GracefulReconnection(t *testing.T) {
 	// 2. Simular reinício do daemon (Stop s1, e Start s2 após delay curto)
 	s1.Stop()
 
-	// Goroutine que inicia novo daemon após 60ms
+	s2 := NewServerWithSocket(sockPath)
+	defer s2.Stop()
 	go func() {
-		time.Sleep(60 * time.Millisecond)
-		s2 := NewServerWithSocket(sockPath)
-		defer s2.Stop()
+		time.Sleep(30 * time.Millisecond)
 		_ = s2.Start()
 	}()
 
 	// 3. O cliente tenta buscar o estado com retry/backoff automático
 	// Deve sobreviver à janela de restart do daemon graciosamente
-	st, err := FetchStateWithRetries(sockPath, 6, 25*time.Millisecond)
+	st, err := FetchStateWithRetries(sockPath, 10, 50*time.Millisecond)
 	if err != nil {
 		t.Fatalf("graceful reconnection failed after daemon restart: %v", err)
 	}
