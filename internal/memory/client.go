@@ -139,3 +139,18 @@ func (c *Client) AppendAuditLog(workdir, debateID string, entry AuditEntry) erro
 	_, err = f.Write(append(data, '\n'))
 	return err
 }
+
+// RecordMergedDecision grava uma decisão técnica durável e auditável na wiki do ai-memory.
+func (c *Client) RecordMergedDecision(project, cardID, title, winner, spec, diffSnippet string) error {
+	if project == "" {
+		project = "swarm-lead"
+	}
+	pagePath := fmt.Sprintf("decisions/%s.md", strings.ToLower(cardID))
+	content := fmt.Sprintf("# [%s] %s\n\n**Data:** %s\n**Vencedor Integrado:** %s\n**Status:** CONCLUÍDO E INTEGRADO\n\n## Especificação\n%s\n",
+		cardID, title, time.Now().UTC().Format(time.RFC3339), winner, spec)
+	if diffSnippet != "" {
+		content += fmt.Sprintf("\n## Diff Integrado\n```diff\n%s\n```\n", diffSnippet)
+	}
+	return c.WriteWikiPage(project, pagePath, content)
+}
+
